@@ -42,7 +42,6 @@ function check_if_fit(s::String, keyword::String)
 	return pos[1]:(pos[2]+length(token))
 end
 
-
 """
     extract_llvm(method::Core.Method, ir::String; main::Bool=false) -> String
 

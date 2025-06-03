@@ -104,8 +104,13 @@ end
 
 function make(mod::Module=Main)
     t_start = time()
-    config = _parse_args()
-    root_mod = mod==Main ? load_pkg(config) : mod
+    if mod === Main
+        config = _parse_args()
+        root_mod = load_pkg(config)
+    else
+        config = Dict("dir"=>"build", "firstN"=>0)
+        root_mod = mod
+    end
 
     # modvar_map = IdDict{Int, ModVar}, map between the address and modvar
     t0 = time()
