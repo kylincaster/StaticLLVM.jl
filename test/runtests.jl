@@ -36,7 +36,6 @@ using TestItemRunner
 
     modinfo_map = StaticLLVM.assemble_modinfo(method_map, modvar_map)
     mods = collect(values(modinfo_map)) |> sort!
-    println(mod)
     @test length(mods) == 2
     @test mods[1].mod == MyMod
     @test length(mods[1].methods) == 2 
@@ -47,6 +46,18 @@ using TestItemRunner
     @test mt.arg_types == (Int,)
     @test mt.mangled == Symbol("_ZN5__2315MyMod3addE")
     @test mods[2].mod == MyMod.SubMod
+end
+
+@testitem "Test Static" begin
+    using StaticLLVM
+
+    mutable struct st_a
+        a::Int
+        b::Float64
+    end
+    add(x) = st_a(x+1, 0.1)
+    ir = sprint(io->StaticLLVM.InteractiveUtils.code_llvm(io, add, (Int,)))
+    @test StaticLLVM.is_static_code(ir) == false
 end
 
 @run_package_tests

@@ -193,8 +193,7 @@ function Base.show(io::IO, mi::ModuleInfo)
 end
 
 
-
-function assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::IdDict{Int,ModVarInfo})::IdDict{Module,ModuleInfo}
+function assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::IdDict{Int,ModVarInfo}, check_ir::Bool = true)::IdDict{Module,ModuleInfo}
     modinfo_map = IdDict{Module,ModuleInfo}()
     n = length(method_map)
     #p = Progress(n; dt=n<100 ? 1000 : 1, desc="assembe methods...", barglyphs=BarGlyphs("[=> ]"), barlen=50)
@@ -207,6 +206,9 @@ function assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::Id
         minfo = modinfo_map[mod]
 
         method_info = MethodInfo(method, mangled_name)
+        if check_ir && !is_static_code(method_info.llvm_ir)
+            error("find non-statice LLVM code from $(method):\n  $(method_info.llvm_ir)")
+        end
         push!(minfo.methods, method_info)
 
         new_names = String[]
@@ -248,6 +250,12 @@ end
         end
     end
     return 1
+end
+
+function is_static_code(ir::String)::Bool
+    substrs = [" @ijl_",]
+    any(s -> occursin(s, ir), substrs)  && return false
+    return true
 end
 
 """
