@@ -4,12 +4,75 @@ using InteractiveUtils
 using ArgParse
 using ProgressMeter
 
-export make
+export build
 
 include("utils.jl")
 include("extract.jl")
 include("mangling.jl")
 include("meta.jl")
+
+# Default configuration for LLVM compilation and module processing
+const DEFAULT_CONFIG = Dict{String,Any}(
+    "dir" => "build",                         # Output directory for LLVM IR
+    "module" => "",                              # Module name (autofilled if empty)
+    "firstN" => 0,                               # Print first N items (debug output)
+    "compile_mode" => :none,                           # :none, :onefile, :makefile
+    "clean_cache" => false,                           # Whether to clean build cache
+    "CLANG" => "clang",                         # Path to clang
+    "CFLAG" => "-O3 -g -Wall -Wno-override-module"  # Compiler flags
+)
+
+"""
+    get_config(; kwargs...) -> Dict{String, Any}
+
+Return a copy of the default config, with optional keyword overrides.
+"""
+function get_config(; kwargs...)::Dict{String,Any}
+    config = copy(DEFAULT_CONFIG)
+    for (k, v) in kwargs
+        config[String(k)] = v
+    end
+    return config
+end
+
+"""
+    clean_cache(path::String)
+
+Delete cached build files (e.g., .o, .so, .dll, .lib, .a, .dylib) under the given directory.
+This is useful for cleaning intermediate or compiled files before a fresh build.
+
+# Arguments
+- `path`: Directory where cache files are stored.
+"""
+function clean_cache(path::String)
+    if !isdir(path)
+        @warn "Path `$path` does not exist or is not a directory."
+        return
+    end
+
+    # Define all file extensions to remove
+    obj_ext = [".o"]
+    static_lib_ext = [".a", ".lib"]
+    dynamic_lib_ext = Sys.iswindows() ? [".dll"] :
+                      Sys.isapple() ? [".dylib"] :
+                      [".so"]
+
+    exts = Set(vcat(obj_ext, static_lib_ext, dynamic_lib_ext))
+
+    files = readdir(path; join=true)
+    removed = 0
+
+    for file in files
+        ext = lowercase(splitext(file)[end])
+        if ext in exts
+            rm(file; force=true)
+            #println("  Removed: $file")
+            removed += 1
+        end
+    end
+
+    println("Removed $removed cache file(s) in `$path`.")
+end
 
 """
     _parse_args() -> Dict
@@ -40,10 +103,73 @@ function _parse_args()
 
         "file"
         help = "Input: a Julia file, a project folder, or a registered package name"
-        required = true
+        default = "makefile.toml"
     end
 
     return parse_args(ARGS, s)
+end
+
+
+"""
+    run_command(cmd::Cmd; verbose::Bool=false) -> NamedTuple
+
+Run the given command and capture its output.
+
+# Arguments
+- `cmd`: A `Cmd` object representing the system command to execute.
+- `verbose`: If true, prints the command before execution.
+
+# Returns
+A named tuple `(success, code, output)`:
+- `success`: `true` if the command succeeded, `false` otherwise.
+- `code`: Exit code (0 if success, -1 if error caught).
+- `output`: Command output or error message as a string.
+"""
+function run_command(cmd::Cmd; verbose::Bool=false)
+    verbose && println(cmd)
+    try
+        output = read(cmd, String)
+        return (success=true, code=0, output=output)
+    catch err
+        return (success=false, code=-1, output=sprint(showerror, err))
+    end
+end
+
+"""
+    compile_ir_files(cfg::Dict)
+
+Compile all LLVM IR files in a specified directory into a single output binary.
+
+# Expected keys in `cfg`:
+- `"module"`: Name of the output executable.
+- `"dir"`: Directory containing `.ll` files.
+- `"CLANG"`: Path to `clang` compiler.
+- `"CFLAG"`: Compiler flags (as a single string, e.g. "-O2 -flto").
+
+Prints status messages and compilation result.
+"""
+function compile_ir_files(config::Dict)
+    # Extract configuration
+    output_name = config["module"]
+    source_dir = config["dir"]
+    clang_path = config["CLANG"]
+    flags = split(config["CFLAG"])  # Convert flag string to array
+
+    source_files = joinpath(source_dir, "*.ll")
+
+    println("Compiling all LLVM IR files in `$source_dir` into `$output_name`...")
+
+    # Construct the command
+    cmd = Cmd([clang_path, flags..., source_files, "-o", output_name])
+
+    # Execute and handle result
+    result = run_command(cmd; verbose=true)
+    if result.success
+        println("Successfully built `$output_name`.")
+        config["clean_cache"] && clean_cache(source_dir)
+    else
+        println("Failed to compile `$output_name`: ", result.output)
+    end
 end
 
 """
@@ -102,65 +228,92 @@ function load_pkg(config::Dict{String,Any})::Module
     return getfield(Main, Symbol(mod_name))
 end
 
-function make(mod::Module=Main)
+"""
+    build(mod::Module=Main, config::Dict=default_config())
+
+Main build process:
+- Parse arguments if called from `Main`.
+- Collect global variables and method info.
+- Dump LLVM IR files.
+- Optionally compile with clang.
+
+# Arguments
+- `mod`: The module to process (defaults to `Main`).
+- `config`: Build configuration dictionary.
+
+# Supported compile modes:
+- `:none` – Just generate IR
+- `:onefile` – Compile all IR into a single binary
+- `:makefile` – (Not implemented)
+"""
+function build(mod::Module=Main, config::Dict{String,Any}=get_config())
     t_start = time()
+
+    # Step 1: Module loading and module name detection
+    root_mod = mod
     if mod === Main
-        config = _parse_args()
+        config = merge!(config, _parse_args())
         root_mod = load_pkg(config)
     else
-        config = Dict("dir"=>"build", "firstN"=>0)
-        root_mod = mod
+        if isempty(get(config, "module", ""))
+            name = string(mod)
+            config["module"] = startswith(name, "Main.") ? name[6:end] : name
+        end
     end
 
-    # modvar_map = IdDict{Int, ModVar}, map between the address and modvar
+    # Step 2: Collect global variables (modvar_map :: IdDict{Int, ModVar})
     t0 = time()
-    modvar_map = IdDict(p[1] => p[2] for p in collect_modvar_pairs(root_mod))
-    dt = round(time() - t0; digits = 4)
-    n = length(modvar_map)
-    println("Collect $(n) global variables for $(dt) sec.")
+    modvars = collect_modvar_pairs(root_mod)
+    modvar_map = IdDict(p[1] => p[2] for p in modvars)
+    println("Collected $(length(modvar_map)) global variables in $(round(time() - t0, digits=4))s.")
 
-    for (i, v) in enumerate(values(modvar_map))
+    for (i, var) in enumerate(values(modvar_map))
         i > config["firstN"] && break
-        println("  $i ", v)
+        println("  [$i] ", var)
     end
 
-
+    # Step 3: Collect methods and rename `main` method
     t0 = time()
-    # methods to origianl name
-    method_map = IdDict{Core.Method, Symbol}()
+    method_map = IdDict{Core.Method,Symbol}()
+    main_method = which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
+    main_method.name = :main
+    collect_methods!(method_map, main_method)
+    main_method.name = :main
+    println("\nCollected $(length(method_map)) methods in $(round(time() - t0, digits=4))s.")
 
-    mt = which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
-    mt.name = :main
-    collect_methods!(method_map, mt)
-    mt.name = :main
-
-    dt = round(time() - t0; digits = 4)
-    println("\nCollect $(n) methods for $(dt) sec.")
-    for (i, v) in enumerate(keys(method_map))
+    for (i, m) in enumerate(keys(method_map))
         i > config["firstN"] && break
-        println("  $i ", v)
+        println("  [$i] ", m)
     end
 
+    # Step 4: Assemble module info (returns :: IdDict{Module, ModuleInfo})
     t0 = time()
-    # IdDict{Module, ModuleInfo}
     modinfo_map = assemble_modinfo(method_map, modvar_map)
-    dt = round(time() - t0; digits = 4)
-    println("\nAssemble $(n) module for $(dt) sec.")
+    println("\nAssembled $(length(modinfo_map)) modules in $(round(time() - t0, digits=4))s.")
 
-    path = config["dir"]
-    if !isdir(path)
-        mkpath(path)
+    # Step 5: Dump LLVM IR files
+    out_dir = config["dir"]
+    isdir(out_dir) || mkpath(out_dir)
+
+    println("Writing LLVM IR files to `$(out_dir)`...")
+    file_count = 0
+    for (i, m) in enumerate(values(modinfo_map))
+        println("  [$i] Dumping LLVM IR from module: $(m)")
+        file_count += dump_llvm_ir(m, out_dir, true)
     end
 
-    print("write LLVM IR to `$(path)`\n")
-    n = 0
-    for (i, mod) in enumerate(values(modinfo_map))
-        print("  $(i)th dump code from $(mod)\n")
-        n += dump_llvm_ir(mod, path, true)
-    end
+    println("Generated $file_count LLVM IR file(s) into `$out_dir` in $(round(time() - t_start, digits=4))s.")
 
-    dt = round(time() - t_start; digits = 4)
-    print("generate all LLVM IR files into `$(path)` for $(dt) sec with $(n) ll files.\n")
+    # Step 6: Optionally compile
+    compile_mode = config["compile_mode"]
+    if compile_mode == :onefile
+        compile_ir_files(config)
+    elseif compile_mode == :makefile
+        error("compile_mode=:makefile is not implemented yet.")
+    elseif compile_mode != :none
+        error("Unknown compile_mode: $compile_mode. Use :none, :onefile, or :makefile.")
+    end
 end
+
 
 end # module end
