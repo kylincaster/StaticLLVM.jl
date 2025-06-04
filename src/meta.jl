@@ -152,6 +152,7 @@ function collect_methods!(name_map::IdDict{Method,Symbol}, method::Method, verbo
     haskey(name_map, method) && return  # Avoid reprocessing
 
     # Extract function and argument types
+    println(method)
     func = method.sig.parameters[1].instance
     args = Tuple(method.sig.parameters[2:end])
 
@@ -182,7 +183,7 @@ end
 Base.isless(a::ModuleInfo, b::ModuleInfo) = Symbol(a.mod) < Symbol(b.mod)
 Base.:(==)(a::ModuleInfo, b::ModuleInfo) = a.mod == b.mod
 
-ModuleInfo(mod::Module) = ModuleInfo(mod, mangle_NS(Symbol("_Mod"), mod), IdSet{ModVarInfo}(), MethodInfo[])
+ModuleInfo(mod::Module) = ModuleInfo(mod, mangle_NS(Symbol("__MOD__"), mod), IdSet{ModVarInfo}(), MethodInfo[])
 """
     Base.show(io::IO, mi::ModuleInfo)
 

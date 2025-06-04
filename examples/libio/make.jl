@@ -1,6 +1,7 @@
+
 using StaticLLVM
 
-include("./demo_libload.jl")
+include("libio.jl")
 
 config = StaticLLVM.get_config(;
     dir=".",
@@ -10,4 +11,4 @@ config = StaticLLVM.get_config(;
 
 # compile mode = onefile, makefile
 # clean = true or false
-build(demo_libload, config)
+build(LibIO, config)

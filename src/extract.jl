@@ -61,25 +61,28 @@ Extract and clean up the LLVM IR of a single Julia-compiled function from the fu
 - Gathers required `declare` lines and LLVM attributes for external linkage.
 """
 function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)::String
+    func_pattern = r"define\s+.*?@julia_([a-zA-Z0-9_]+)_([a-zA-Z0-9]+)\("
+    funcs = String[]
+    mangled_funcname = nothing
     funcname = string(method.name)
-    func_pattern = Regex("define .*@julia_$(funcname)_\\d+")
-    m = match(func_pattern, ir)
-    m === nothing && error("Function $funcname not found in IR:\n$ir")
+    for (_, m) in enumerate(eachmatch(func_pattern, ir))
+        body_end = find_matching_brace(ir, m.offset)
+        body_end == -1 && error("Function body for match not found.")
+        decl = ir[m.offset:body_end+1]
+        name = "julia_$(m.captures[1])_$(m.captures[2])"
+        if m.captures[1] == funcname && all(isdigit, m.captures[2])
+            mangled_funcname = name
+            pushfirst!(funcs, decl)
+        else
+            push!(funcs, decl)
+        end
+    end
+    
+    isempty(funcs) && error("Function $funcname not found in IR:\n$ir")
+    mangled_funcname == nothing && error("Function $funcname not found in IR:\n$ir")
 
-    matched_line = m.match
-    offset = m.offset + length(matched_line)
-
-    # Construct function name and rename it if needed
-    suffix = extract_suffix(matched_line)
-    full_funcname = matched_line[end-(length(funcname)+length(suffix)+6):end]
-    renamed = is_main ? "main" : "$funcname"
-    header = replace(matched_line, full_funcname => renamed)
-
-    # Extract full function body by matching the closing brace
-    body_end = find_matching_brace(ir, offset)
-    body_end == -1 && error("Function body for $funcname not found.")
-    body = ir[offset:body_end]
-    func_ir = header * body
+    renamed = is_main ? "main" : funcname
+    func_ir = replace(join(funcs), mangled_funcname => renamed)
 
     # === Handle global constants ===
     modvar_regex = VERSION ≥ v"1.11.0" ?
@@ -103,7 +106,7 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)::Str
 
     # === Collect external function declarations and attributes ===
     decl_pattern = r"""^declare\s+\w+\s+@([^\s(]+)"""m
-    decls = String["\n"]
+    decls = String[]
 
     for m in eachmatch(decl_pattern, ir)
         fname = m.captures[1]
