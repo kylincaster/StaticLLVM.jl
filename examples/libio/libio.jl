@@ -20,6 +20,19 @@ function logfile(input_str::Ptr{UInt8})::Int
     end
 end
 
+function logfile()::Int
+    filename = c"new.file"
+    mode     = c"w"
+    fmt      = c"good day = %d\n"
+
+    GC.@preserve filename mode fmt begin
+        fp = StaticTools.fopen(filename, mode)
+        written = StaticTools.fprintf(fp, fmt, 100)
+        StaticTools.fclose(fp)
+        return written
+    end
+end
+
 """
     _main_(argc::Int, argv::Ptr{Ptr{UInt8}})
 
@@ -35,3 +48,6 @@ function _main_(argc::Int, argv::Ptr{Ptr{UInt8}})
     end
 end
 end # module
+
+#LibIO.logfile()
+#print("write logfile")

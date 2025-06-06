@@ -18,6 +18,7 @@ Print multiple arguments joined by a separator and ending with a specified tail 
 ```julia
 pyprint("Hello", "world", 123; sep=", ", tail="!\n")
 # Output: Hello, world, 123!
+```
 """
 function pyprint(args...; sep::AbstractString=" ", tail::AbstractString="\n")
     output = join(string.(args), sep)
@@ -42,6 +43,7 @@ Returns the index of the matching closing brace, or -1 if:
 ```julia
 find_matching_brace("a{b{c}d}e")  # returns 9
 find_matching_brace("abc", 1)     # returns -1
+```
 """
 function find_matching_brace(s::String, start_pos::Int=1)::Int
     open_idx = findnext(==('{'), s, start_pos)
@@ -98,6 +100,7 @@ println(strip_comments(code))
 #   %1 = add i32 1, 2
 #   ret i32 %1
 # }
+```
 """
 function strip_comments(ir::String)::String
     lines = split(ir, '\n', keepempty=true) # Split IR code into lines, preserve empty lines
@@ -140,6 +143,7 @@ Generate the LLVM IR for a given Julia method.
 ```julia
 ir = emit_llvm(my_method, clean=true, dump=false)
 println(ir)
+```
 """
 function emit_llvm(method::Core.Method; clean::Bool=true, dump::Bool=true)::String
     fn = method.sig.parameters[1].instance # Extract function instance
@@ -175,6 +179,7 @@ Generate the LLVM IR for a specific method of a given Julia function and argumen
 ```julia
 ir = emit_llvm(sin, (Float64,), clean=true, dump=false)
 println(ir)
+```
 """
 function emit_llvm(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true)::String
     method = which(fn, args) # Find method matching function and argument types
@@ -205,6 +210,7 @@ Generate the native LLVM bitcode (assembly) for a given Julia method.
 ```julia
 native_ir = emit_native(my_method, clean=true, dump=false)
 println(native_ir)
+```
 """
 function emit_native(method::Core.Method; clean::Bool=true, dump::Bool=true)::String
     fn = method.sig.parameters[1].instance # Function instance
@@ -237,6 +243,7 @@ Generate native LLVM assembly for a specific method of a Julia function given ar
 ```julia
 native_code = emit_native(sin, (Float64,); clean=true, dump=false)
 println(native_code)
+```
 """
 function emit_native(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true)::String
     method = which(fn, args)
@@ -259,12 +266,12 @@ Extract the substring after the last underscore `_` in the given string `s`.
 ```julia
 extract_suffix("file_name_suffix")  # returns "suffix"
 extract_suffix("filename")          # returns nothing
+```
 """
 @inline function extract_suffix(s::AbstractString)
     pos = findlast(==('_'), s)
     return pos === nothing ? nothing : s[pos+1:end]
 end
-
 
 """
     get_mod_filepath(mod::Module) -> Symbol

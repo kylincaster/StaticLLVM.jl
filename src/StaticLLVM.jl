@@ -74,10 +74,9 @@ function clean_cache(path::String)
     println("Removed $removed cache file(s) in `$path`.")
 end
 
-"""
-    _parse_args() -> Dict
 
-    parse arguments
+"""
+    function to parse arguments without a Module specified 
 """
 function _parse_args()
     s = ArgParseSettings()
@@ -136,7 +135,7 @@ function run_command(cmd::Cmd; verbose::Bool=false)
 end
 
 """
-    compile_ir_files(cfg::Dict)
+    compile_llvm_files(cfg::Dict)
 
 Compile all LLVM IR files in a specified directory into a single output binary.
 
@@ -148,7 +147,7 @@ Compile all LLVM IR files in a specified directory into a single output binary.
 
 Prints status messages and compilation result.
 """
-function compile_ir_files(config::Dict)
+function compile_llvm_files(config::Dict)
     # Extract configuration
     output_name = config["module"]
     source_dir = config["dir"]
@@ -166,7 +165,7 @@ function compile_ir_files(config::Dict)
     result = run_command(cmd; verbose=true)
     if result.success
         println("Successfully built `$output_name`.")
-        config["clean_cache"] && clean_cache(source_dir)
+        clean_cache(source_dir)
     else
         println("Failed to compile `$output_name`: ", result.output)
     end
@@ -261,7 +260,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
         end
     end
 
-    # Step 2: Collect global variables (modvar_map :: IdDict{Int, ModVar})
+    # Step 2: Collect global variables (modvar_map :: IdDict{Ptr, ModVar})
     t0 = time()
     modvars = collect_modvar_pairs(root_mod)
     modvar_map = IdDict(p[1] => p[2] for p in modvars)
@@ -274,7 +273,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
 
     # Step 3: Collect methods and rename `main` method
     t0 = time()
-    method_map = IdDict{Core.Method,Symbol}()
+    method_map = IdDict{Core.Method, Symbol}()
     main_method = which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
     main_method.name = :main
     collect_methods!(method_map, main_method)
@@ -307,7 +306,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
     # Step 6: Optionally compile
     compile_mode = config["compile_mode"]
     if compile_mode == :onefile
-        compile_ir_files(config)
+        compile_llvm_files(config)
     elseif compile_mode == :makefile
         error("compile_mode=:makefile is not implemented yet.")
     elseif compile_mode != :none

@@ -1,5 +1,5 @@
 """
-    ModVarInfo
+    ModVarInfo(name::String, mod::Module, mangled::String, llvm_def::String, llvm_decl::String)
 
 Holds metadata for a module-level mutable variable (`ModVar`):
 
@@ -29,19 +29,41 @@ function Base.show(io::IO, mi::ModVarInfo)
 end
 
 """
-    MethodInfo
+    MethodInfo(m::Core.Method)
+    MethodInfo(m::Core.Method, name::Symbol())
 
-Stores compiled LLVM IR and metadata for a Julia method, including mangled name,
-argument types, and global module variable address (if any).
+A mutable struct that stores metadata and compiled LLVM IR information for a specific Julia method.
+
+# Fields
+- `name::Symbol`: A user-friendly name for the method. Defaults to the mangled name if not provided.
+- `mangled::Symbol`: The internal compiler name of the method, used for LLVM IR lookup.
+- `arg_types::Tuple`: A tuple of argument types (excluding the function type), derived from the method signature.
+- `method::Core.Method`: The original Julia `Method` object
+- `llvm_ir::String`: The LLVM IR code generated for the method, extracted as a string.
+- `modvar_ids::Vector{Int}`: A list of module-level variable addresses (e.g., `jl_global#`) found in the LLVM IR.
 """
 mutable struct MethodInfo
     name::Symbol              # Friendly name (or fallback to mangled name)
-    mangled::Symbol      # Internal name used for LLVM IR lookup
+    mangled::Symbol           # Internal name used for LLVM IR lookup
     arg_types::Tuple          # Tuple of argument types (excluding function type)
     method::Core.Method       # The original method object
     llvm_ir::String           # Extracted LLVM IR code as string
     modvar_ids::Vector{Int}   # List of module-level variable address in LLVM IR
 
+    """
+    Create a `MethodInfo` instance by compiling the given method and extracting its
+    LLVM IR and related metadata.
+
+    # Arguments
+    - `m::Core.Method`: The method from which metadata and IR will be extracted.
+    - `name::Symbol`: (Optional) A custom name to assign. Defaults to the method's mangled name.
+
+    # Behavior
+    - Parses the method signature to extract the function and argument types.
+    - Ensures the method is JIT-compiled via `precompile`.
+    - Retrieves the LLVM IR as a string using `extract_llvm`.
+    - Detects and collects any module-level variable references from the native code.
+    """
     function MethodInfo(m::Core.Method, name::Symbol=Symbol(""))
         # Extract the function and its argument types from method signature
         func = m.sig.parameters[1].instance
@@ -173,11 +195,27 @@ function collect_methods!(name_map::IdDict{Method,Symbol}, method::Method, verbo
     end
 end
 
+"""
+    ModuleInfo
 
+Stores metadata associated with a Julia `Module`, including referenced methods and 
+global module-level variables.
+
+# Fields
+- `mod::Module`: The Julia module this information is associated with.
+- `mangled::String`: The mangled name of the module, following the Itanium C++ ABI
+- `modvars::IdSet{ModVarInfo}`: A set of global static variables (`ModVarInfo`) used in this module.
+  Identity-based (`IdSet`) to ensure uniqueness by object reference.
+- `methods::Vector{MethodInfo}`: A list of methods (`MethodInfo`) defined or referenced within this module.
+
+# Usage
+`ModuleInfo` is typically constructed internally during code analysis or code generation workflows
+to track both method definitions and global state referenced by a module.
+"""
 struct ModuleInfo
     mod::Module                    # Symbolic file path or name
     mangled::String                # Mangled name of module
-    modvars::IdSet{ModVarInfo}     # Used modvars
+    modvars::IdSet{ModVarInfo}     # Used modvars using the address as the hash source (unique)
     methods::Vector{MethodInfo}    # Used methods
 end
 Base.isless(a::ModuleInfo, b::ModuleInfo) = Symbol(a.mod) < Symbol(b.mod)
@@ -193,35 +231,68 @@ function Base.show(io::IO, mi::ModuleInfo)
     print(io, "Module `", mi.mod, "`: $(length(mi.modvars)) modvar, $(length(mi.methods)) methods")
 end
 
+"""
+    assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::IdDict{Int,ModVarInfo}, check_ir::Bool = true)::IdDict{Module,ModuleInfo}
 
+Assembles `ModuleInfo` objects that contain information about both methods and associated module-level variables (`MethodInfo`) within each module.
+During the assembly process, metadata for each method is generated as a `MethodInfo` object, including its LLVM IR representation.
+If `MethodInfo` is set to true, the LLVM IR is optionally validated to ensure it represents static code only.
+
+# Arguments
+- `method_map`: A dictionary mapping `Method` objects to their mangled names.
+- `modvar_map`: A dictionary mapping module variable pointer address to their `ModVarInfo` (module variable info).
+- `check_ir`: If true, validates that LLVM IR of the method does not contain dynamic symbols.
+
+# Returns
+- A dictionary mapping each involved `Module` to its `ModuleInfo`.
+"""
 function assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::IdDict{Int,ModVarInfo}, check_ir::Bool = true)::IdDict{Module,ModuleInfo}
+     # Initialize an empty dictionary to hold ModuleInfo for each Module
     modinfo_map = IdDict{Module,ModuleInfo}()
-    n = length(method_map)
-    #p = Progress(n; dt=n<100 ? 1000 : 1, desc="assembe methods...", barglyphs=BarGlyphs("[=> ]"), barlen=50)
+
+    # n = length(method_map)
+    # p = Progress(n; dt=n<100 ? 1000 : 1, desc="assembe methods...", barglyphs=BarGlyphs("[=> ]"), barlen=50)
+
+    # Iterate over all methods and their mangled names
     for (method, mangled_name) in method_map
         mod = method.module
 
+        # Create a new ModuleInfo if this module is not already registered
         if !haskey(modinfo_map, mod)
             modinfo_map[mod] = ModuleInfo(mod)
         end
+
         minfo = modinfo_map[mod]
 
+        # Create MethodInfo for this method
         method_info = MethodInfo(method, mangled_name)
+
+        # Optionally check if the method's LLVM IR is "static"
         if check_ir && !is_static_code(method_info.llvm_ir)
             error("find non-statice LLVM code from $(method):\n  $(method_info.llvm_ir)")
         end
+
+        # Register the method in the module's method list
         push!(minfo.methods, method_info)
 
-        new_names = String[]
-        llvm_decls = String[]
+
+        # Prepare to patch global variables used by this method
+        new_names = String[]       # Holds the mangled names
+        llvm_decls = String[]      # Holds LLVM declarations of global variables
+
+        # Process all global variables referenced by this method
         for var_id in method_info.modvar_ids
             if haskey(modvar_map, var_id)
                 modvar = modvar_map[var_id]
                 my_mod = modvar.mod
+
+                # Ensure the module containing the global var has ModuleInfo
                 if !haskey(modinfo_map, my_mod)
                     modinfo_map[my_mod] = ModuleInfo(my_mod)
                 end
                 my_minfo = modinfo_map[my_mod]
+
+                # Collect the LLVM declaration and name for later substitution
                 push!(llvm_decls, modvar.llvm_decl)
                 push!(new_names, modvar.mangled)
                 push!(my_minfo.modvars, modvar)
@@ -230,13 +301,24 @@ function assemble_modinfo(method_map::IdDict{Core.Method,Symbol}, modvar_map::Id
             end
         end
 
+        # Combine LLVM declarations and apply global variable names replacements in method IR
         method_info.llvm_ir = join(llvm_decls) * replace_globals(method_info.llvm_ir, new_names)
-        #next!(p)
+        # next!(p)
     end
 
     return modinfo_map
 end
 
+"""
+    write_if_changed(filepath::String, content::String, check::Bool)::Int
+
+Writes `content` to `filepath` only if the file content has changed or doesn't exist.
+If `check` is false, no writing occurs.
+
+# Returns
+- 1 if the file was written (or would be written).
+- 0 if no writing was done due to `check == false`.
+"""
 @inline function write_if_changed(filepath::String, content::String, check::Bool)::Int
     # If check is false, skip writing
     check || return 0
@@ -253,6 +335,15 @@ end
     return 1
 end
 
+"""
+    is_static_code(ir::String)::Bool
+
+Determines whether the given LLVM IR string is "static", i.e., free from dynamic symbols or Julia internal functions.
+
+# Returns
+- `true` if the IR contains no known dynamic patterns.
+- `false` if any non-static signature (like `@ijl_`) is found.
+"""
 function is_static_code(ir::String)::Bool
     substrs = [" @ijl_",]
     any(s -> occursin(s, ir), substrs)  && return false
