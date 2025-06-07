@@ -145,7 +145,7 @@ function collect_modvar_pairs(mod::Module)
 
         # Generate mangled LLVM symbol and IR code
         mangled_name = mangle_NS(name, mod)
-        def_ir, decl_ir = gen_llvm_ir_decl("@" * mangled_name, value)
+        def_ir, decl_ir = make_modvar_def("@" * mangled_name, value)
 
         # Only compute source file path symbol once
         # file_path_sym === nothing && (file_path_sym = get_mod_filepath(mod))

@@ -157,32 +157,45 @@ function emit_llvm(method::Core.Method; clean::Bool=true, dump::Bool=true)::Stri
     end
 end
 
-"""
-    emit_native(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true) -> String
 
-Generate the LLVM IR for a specific method of a given Julia function and argument types.
+"""
+    emit_llvm(fn::Function, args::Union{Tuple, Nothing}=nothing; clean::Bool=true, dump::Bool=true) -> String
+
+Generate LLVM IR for a specific method of a Julia function specialized on given argument types.
 
 # Arguments
-- `fn`: A `Core.Function` object representing the Julia function.
-- `args`: A `Tuple` of argument types used to select the method specialization.
-- `clean`: If `true`, remove comments and optionally add a header comment. Default is `true`.
-- `dump`: If `true`, include the full LLVM module in the output. Default is `true`.
+- `fn`: Julia function whose LLVM IR is requested.
+- `args`: Tuple of argument types specifying the method specialization; 
+          if `nothing`, expect exactly one method for `fn`.
+- `clean`: Remove extraneous comments and optionally add header if true (default: true).
+- `dump`: Include full LLVM module in output if true (default: true).
 
 # Returns
-- A string containing the LLVM IR of the selected method, optionally cleaned.
+- LLVM IR string of the matched method, optionally cleaned.
 
-# Details
-- Uses `which` to locate the `Core.Method` matching the function and argument types.
-- Calls `emit_llvm` (previously defined) to generate and optionally clean the LLVM IR.
+# Behavior
+- If `args` is provided, use `which` to find the exact method.
+- If `args` is `nothing`, expect `fn` to have exactly one method, or throw an error.
+- Delegates actual IR emission to another `emit_llvm` method accepting a `Method`.
 
 # Example
 ```julia
-ir = emit_llvm(sin, (Float64,), clean=true, dump=false)
+ir = emit_llvm(sin, (Float64,); clean=true, dump=false)
+println(ir)
+
+add(x::Int) = x + 1
+ir = emit_llvm(add)
 println(ir)
 ```
 """
-function emit_llvm(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true)::String
-    method = which(fn, args) # Find method matching function and argument types
+function emit_llvm(fn::Core.Function, args::Union{Tuple, Nothing}=nothing; clean::Bool=true, dump::Bool=true)::String
+    method = if args isa Nothing
+        all_methods = methods(fn)
+        n = length(all_methods)
+        n == 1 ? all_methods[1] : error("Ambiguous method: function $fn has $n methods.\nCandidates:\n$all_methods")
+    else
+        which(fn, args) # Find method matching function and argument types
+    end
     return emit_llvm(method; clean=clean, dump=dump)
 end
 
@@ -222,31 +235,44 @@ function emit_native(method::Core.Method; clean::Bool=true, dump::Bool=true)::St
 end
 
 """
-    emit_native(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true) -> String
+    emit_native(fn::Function, args::Union{Tuple, Nothing}=nothing; clean::Bool=true, dump::Bool=true) -> String
 
 Generate native LLVM assembly for a specific method of a Julia function given argument types.
 
 # Arguments
-- `fn`: The Julia function (`Core.Function`) to generate native code for.
-- `args`: Tuple of argument types to select the method specialization.
-- `clean`: If `true`, strip comments and debug info from the output. Default is `true`.
-- `dump`: If `true`, include the full module dump. Default is `true`.
+- `fn`: Julia function whose LLVM IR is requested.
+- `args`: Tuple of argument types specifying the method specialization; 
+          if `nothing`, expect exactly one method for `fn`.
+- `clean`: Remove extraneous comments and optionally add header if true (default: true).
+- `dump`: Include full LLVM module in output if true (default: true).
 
 # Returns
-- A string of native LLVM assembly corresponding to the selected method.
+- A string containing the native LLVM assembly code.
+- When `clean` is `true`, comments and debug info are removed.
 
-# Details
-- Uses `which` to find the method matching the function and argument types.
-- Delegates to `emit_native_ir` to generate and optionally clean the native IR.
+# Behavior
+- If `args` is provided, use `which` to find the exact method.
+- If `args` is `nothing`, expect `fn` to have exactly one method, or throw an error.
+- Delegates actual IR emission to another `emit_llvm` method accepting a `Method`.
 
 # Example
 ```julia
-native_code = emit_native(sin, (Float64,); clean=true, dump=false)
-println(native_code)
+ir = emit_native(sin, (Float64,); clean=true, dump=false)
+println(ir)
+
+add(x::Int) = x + 1
+ir = emit_native(add)
+println(ir)
 ```
 """
-function emit_native(fn::Core.Function, args::Tuple; clean::Bool=true, dump::Bool=true)::String
-    method = which(fn, args)
+function emit_native(fn::Core.Function, args::Union{Tuple, Nothing}=nothing; clean::Bool=true, dump::Bool=true)::String
+    method = if args isa Nothing
+        all_methods = methods(fn)
+        n = length(all_methods)
+        n == 1 ? all_methods[1] : error("Ambiguous method: function $fn has $n methods.\nCandidates:\n$all_methods")
+    else
+        which(fn, args) # Find method matching function and argument types
+    end
     return emit_native(method; clean=clean, dump=dump)
 end
 
@@ -272,6 +298,7 @@ extract_suffix("filename")          # returns nothing
     pos = findlast(==('_'), s)
     return pos === nothing ? nothing : s[pos+1:end]
 end
+
 
 """
     get_mod_filepath(mod::Module) -> Symbol
