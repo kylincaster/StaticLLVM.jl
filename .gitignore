@@ -1,6 +1,7 @@
 /Manifest*.toml
 /docs/build/*
 *.ll
+*.debug_ll
 *.o
 *.exe
 *.dll

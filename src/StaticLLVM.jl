@@ -13,13 +13,15 @@ include("meta.jl")
 
 # Default configuration for LLVM compilation and module processing
 const DEFAULT_CONFIG = Dict{String,Any}(
-    "dir" => "build",                         # Output directory for LLVM IR
-    "module" => "",                              # Module name (autofilled if empty)
-    "firstN" => 0,                               # Print first N items (debug output)
-    "compile_mode" => :none,                           # :none, :onefile, :makefile
-    "clean_cache" => false,                           # Whether to clean build cache
-    "CLANG" => "clang",                         # Path to clang
-    "CFLAG" => "-O3 -g -Wall -Wno-override-module"  # Compiler flags
+    "dir" => "build",                                   # Directory to save generated LLVM IR files
+    "module" => "",                                     # Module name (autofilled if empty)
+    "compile_mode" => :none,                            # Compilation strategy: :none, :onefile, or :makefile
+    "firstN" => 0,                                      #  Number of methods or items to print for debugging
+    "clean_cache" => false,                             # Whether to clean the build/cache directory before compilation
+    "clang" => "clang",                                 # Path to the clang compiler
+    "cflag" => "-O3 -g -Wall -Wno-override-module",     # Flags passed to clang for optimization and warnings
+    "debug" => false,                                   # Print debug information and write original LLVM IR representation as .debug_level
+    "policy" => :warn                                   # policy for handling GC-influenced LLVM code: :warn, :strict, :strip, :strip_all
 )
 
 """
@@ -135,15 +137,15 @@ function run_command(cmd::Cmd; verbose::Bool=false)
 end
 
 """
-    compile_llvm_files(cfg::Dict)
+    compile_llvm_files(config::Dict)
 
 Compile all LLVM IR files in a specified directory into a single output binary.
 
-# Expected keys in `cfg`:
+# Expected keys in `config`:
 - `"module"`: Name of the output executable.
 - `"dir"`: Directory containing `.ll` files.
-- `"CLANG"`: Path to `clang` compiler.
-- `"CFLAG"`: Compiler flags (as a single string, e.g. "-O2 -flto").
+- `"clang"`: Path to `clang` compiler.
+- `"cflag"`: Compiler flags (as a single string, e.g. "-O2 -flto").
 
 Prints status messages and compilation result.
 """
@@ -151,8 +153,8 @@ function compile_llvm_files(config::Dict)
     # Extract configuration
     output_name = config["module"]
     source_dir = config["dir"]
-    clang_path = config["CLANG"]
-    flags = split(config["CFLAG"])  # Convert flag string to array
+    clang_path = config["clang"]
+    flags = split(config["cflag"])  # Convert flag string to array
 
     source_files = joinpath(source_dir, "*.ll")
 
@@ -246,6 +248,7 @@ Main build process:
 - `:makefile` – (Not implemented)
 """
 function build(mod::Module=Main, config::Dict{String,Any}=get_config())
+    is_debug = config["debug"]
     t_start = time()
 
     # Step 1: Module loading and module name detection
@@ -273,7 +276,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
 
     # Step 3: Collect methods and rename `main` method
     t0 = time()
-    method_map = IdDict{Core.Method, Symbol}()
+    method_map = IdDict{Core.Method,Symbol}()
     main_method = which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
     main_method.name = :main
     collect_methods!(method_map, main_method)
@@ -287,7 +290,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
 
     # Step 4: Assemble module info (returns :: IdDict{Module, ModuleInfo})
     t0 = time()
-    modinfo_map = assemble_modinfo(method_map, modvar_map)
+    modinfo_map = assemble_modinfo(config, method_map, modvar_map)
     println("\nAssembled $(length(modinfo_map)) modules in $(round(time() - t0, digits=4))s.")
 
     # Step 5: Dump LLVM IR files
