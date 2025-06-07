@@ -3,10 +3,14 @@
 // gcc -DADDLIB_EXPORTS -shared -o addlib.dll addlib.c
 
 // 用于导出符号（Windows特有）
-#ifdef ADDLIB_EXPORTS
-#define ADDLIB_API __declspec(dllexport)
+#ifdef _WIN32
+  #ifdef ADDLIB_EXPORTS
+    #define ADDLIB_API __declspec(dllexport)
+  #else
+    #define ADDLIB_API __declspec(dllimport)
+  #endif
 #else
-#define ADDLIB_API __declspec(dllimport)
+  #define ADDLIB_API
 #endif
 
 // 导出的函数

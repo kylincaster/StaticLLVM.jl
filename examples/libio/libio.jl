@@ -7,45 +7,71 @@ using StaticTools
 
 Write formatted message to file using a C-compatible pointer to string.
 """
-function logfile(input_str::Ptr{UInt8})::Int
-    filename = c"new.file"
+function logfile(argc::Int, argv::Ptr{Ptr{UInt8}})::Int
+    filename = c"log.txt"
     mode     = c"w"
-    fmt      = c"good day = %d, good %s\n"
+    header   = c"# write file to log.txt with %d argv\n"
+    fmt      = c"%s\n"
 
-    GC.@preserve filename mode fmt begin
+    GC.@preserve filename mode fmt header begin
         fp = StaticTools.fopen(filename, mode)
-        written = StaticTools.fprintf(fp, fmt, 1, input_str)
+        if fp == Ptr{StaticTools.FILE}(C_NULL)
+            return -1
+        end
+        written = StaticTools.fprintf(fp, header, argc)
+        for i in 1:argc
+            p = Ptr{UInt8}(unsafe_load(argv, i))
+            written += StaticTools.fprintf(fp, fmt, p)
+        end
         StaticTools.fclose(fp)
         return written
     end
 end
 
-function logfile()::Int
-    filename = c"new.file"
-    mode     = c"w"
-    fmt      = c"good day = %d\n"
-
+function read_file()
+    filename = c"log.txt"
+    mode    = c"r"
+    fmt     = c"line%3d: %s \n"   
     GC.@preserve filename mode fmt begin
         fp = StaticTools.fopen(filename, mode)
-        written = StaticTools.fprintf(fp, fmt, 100)
-        StaticTools.fclose(fp)
-        return written
+        if fp == Ptr{StaticTools.FILE}(C_NULL)
+            return -1
+        end
+        s = StaticTools.readline(fp)
+        n = StaticTools.strlen(s)
+        i = 1
+        while(StaticTools.strlen(s) != 0)
+            StaticTools.printf(fmt, i, s)
+            StaticTools.free(s)
+            StaticTools.readline(fp)
+            i += 1
+            n += StaticTools.strlen(s)
+        end
+        StaticTools.free(s)
+        n
     end
 end
+
 
 """
     _main_(argc::Int, argv::Ptr{Ptr{UInt8}})
 
-Entry point to call logfile if argument exists.
+Entry point to call logfile and read_file() if argument exists.
 """
 function _main_(argc::Int, argv::Ptr{Ptr{UInt8}})
-    if argc > 0
-        arg1 = Ptr{UInt8}(unsafe_load(argv, 1))
-        n = logfile(arg1)
-        StaticTools.printf(c"write %d chars\n", n)
+    if argc > 1
+        n = logfile(argc, argv)
+        if n == -1
+            printf(c"cannot write `log.txt`\n")
+        else
+            printf(c"write %d chars\n", n)
+        end
     else
-        StaticTools.printf(c"cannot save file without argv, argc = %d\n", argc)
+        printf(c"cannot save file without zero argc.\n")
     end
+    n = read_file()
+    printf(c"read %d chars\n", n)
+    return 0
 end
 end # module
 
