@@ -5,7 +5,7 @@ config = StaticLLVM.get_config(;
     dir=".",
     compile_mode=:onefile,
     clean_cache = false,
-    debug = false,
+    debug = true,
     policy = :strip_all
 )
 
