@@ -124,8 +124,9 @@ function write_func_body(result, body, GenericMemory_to_size)
 end
 
 function replace_memory_alloc(method::MethodInfo)
+    llvm = methods.llvm
     GenericMemory_to_size = Pair{SubString{String}, UInt}[]
-    for (k, v) in method.alias
+    for (k, v) in llvm.alias
         if occursin("+Core.GenericMemory#", k)
             addr = parse(Int, split(String(v))[6], ) |> Ptr{UInt}
             svec = unsafe_load(addr, 3) |> Ptr{UInt} # to svec_pointer 3

@@ -65,6 +65,7 @@ function find_matching_brace(s::String, start_pos::Int=1)::Int
     return -1  # No matching closing brace found
 end
 
+const SSDict = Dict{SubString{String}, SubString{String}}
 
 """
     strip_comments(ir::String) -> String

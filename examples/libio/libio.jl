@@ -76,5 +76,18 @@ function _main_(argc::Int, argv::Ptr{Ptr{UInt8}})
 end
 end # module
 
+"""
+> ./LibIO a b c d e
+write 103 chars
+line  1: # write file to log.txt with 6 argv
+line  2: D:\\Projects\\Julia\\StaticLLVM.jl\\examples\\libio\\LibIO
+line  3: a
+line  4: b
+line  5: c
+line  6: d
+line  7: e
+read 96 chars
+"""
+
 #LibIO.logfile()
 #print("write logfile")

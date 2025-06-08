@@ -1,3 +1,14 @@
+
+mutable struct LLVM_Meta
+    name::String
+    headers::Vector{String}
+    funcs::Vector{String}
+    alias::Dict{String, String} # 
+    decls::Dict{String, String}
+    attrs::Vector{String}
+    raw_ir::String
+end
+
 """
     extract_modvars(ir::String) -> Vector{Int}
 
@@ -60,72 +71,86 @@ Extract and clean up the LLVM IR of a single Julia-compiled function from the fu
 - Rewrites global constant names for uniqueness.
 - Gathers required `declare` lines and LLVM attributes for external linkage.
 """
-function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)::String
-    func_pattern = r"define\s+.*?@julia_([a-zA-Z0-9_]+)_([a-zA-Z0-9]+)\("
-    funcs = String[]
+function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)
+    # Fix internal @j_* names to simple @func style
+    ir = replace(ir, r"@j_([A-Za-z0-9_]+)_\d+" => s"@\1")
+    
+    func_pattern = r"define\s+.*?@julia_([a-zA-Z0-9_]+)_([a-zA-Z0-9]+)\(.*?$"m
     mangled_funcname = nothing
     funcname = string(method.name)
-    for (_, m) in enumerate(eachmatch(func_pattern, ir))
+
+    headers = String[]
+    funcs = String[] # func body
+    for m in eachmatch(func_pattern, ir)
         body_end = find_matching_brace(ir, m.offset)
         body_end == -1 && error("Function body for match not found.")
-        decl = ir[m.offset:body_end+1]
+        header_end = m.offset + length(m.match)
+        header = ir[m.offset:header_end]
+        decl = ir[header_end+1:body_end+1]
         name = "julia_$(m.captures[1])_$(m.captures[2])"
         if m.captures[1] == funcname && all(isdigit, m.captures[2])
             mangled_funcname = name
+            pushfirst!(headers, header)
             pushfirst!(funcs, decl)
         else
+            push!(headers, header)
             push!(funcs, decl)
         end
     end
     
     isempty(funcs) && error("Function $funcname not found in IR:\n$ir")
-    mangled_funcname == nothing && error("Function $funcname not found in IR:\n$ir")
+    mangled_funcname isa Nothing && error("Function $funcname not found in IR:\n$ir")
 
     renamed = is_main ? "main" : funcname
-    func_ir = replace(join(funcs), mangled_funcname => renamed)
+    n_funcs = length(funcs)
+    @inbounds for i in 1:n_funcs
+        funcs[i] = replace(funcs[i], mangled_funcname => renamed)
+        headers[i] = replace(headers[i], mangled_funcname => renamed)
+    end
 
     # === Handle global constants ===
-    modvar_regex = VERSION ≥ v"1.11.0" ?
-                  r"""^@"_j_const#\d+"\s*=.*\n"""m :
-                  r"""^@_j_const\d+\s*=.*\n"""m
-    modvar_lines = map(m -> m.match, eachmatch(modvar_regex, ir))
-
-    if !isempty(modvar_lines)
-        modvar_map = Dict{SubString,String}()
-        renamed_modvars = String[]
-
-        for (i, line) in enumerate(modvar_lines)
-            split_pos = findnext(==(' '), line, 3) - 1
-            new_name = "@\"_$(funcname)_const#$i\""
-            modvar_map[line[1:split_pos]] = new_name
-            push!(renamed_modvars, new_name * line[split_pos+1:end])
+    #modvar_regex = VERSION ≥ v"1.11.0" ?
+    #              r"""^@"_j_const#\d+"\s*=.*\n"""m :
+    #              r"""^@_j_const\d+\s*=.*\n"""m
+    
+    alias_pattern = r"^@([^\ ]+)\s*=\s(.+)$"m
+    alias_map = Dict{String,String}()
+    constvar_matches = RegexMatch[]
+    for m in eachmatch(alias_pattern, ir)
+        k, v = m.captures[1:2]
+        if occursin("\"_j_const#", k)
+            push!(constvar_matches, m)
+        else
+            alias_map[k]= v
         end
+    end    
 
-        func_ir = join(renamed_modvars) * replace(func_ir, modvar_map...)
+    if !isempty(constvar_matches)
+        constvar_map = Dict{SubString,String}()
+        for (i, m) in enumerate(constvar_matches)
+            new_name = "\"_$(funcname)_const#$i\""
+            constvar_map[m.captures[1]] = new_name
+            alias_map[new_name] = m.captures[2]
+        end
+        @inbounds for i in 1:n_funcs
+            funcs[i] = replace(funcs[i], constvar_map...)
+        end
     end
 
     # === Collect external function declarations and attributes ===
-    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_|julia.\w*_gc_frame))([^\s(]+)"""m
-    decls = String[]
+    # Skip internal or known runtime functions
+    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_|julia.\w*_gc_frame))(.+)\(.+$"""m
 
+    decl_map = Dict{String,String}()
     for m in eachmatch(decl_pattern, ir)
         fname = m.captures[2]
-        # Skip internal or known runtime functions
-        if !(startswith(fname, "llvm") || startswith(fname, "ijl_gc") || startswith(fname, "ijl_box"))
-            start_pos = m.offsets[2] + length(fname)
-            end_pos = findnext(==('\n'), ir, start_pos)
-            push!(decls, ir[start_pos - length(m.match):end_pos])
-        end
+        decl_map[fname] = m.match
     end
 
     # Append function attributes (if any)
-    attr_pattern = r"^attributes\s+#\d+\s+=\s+\{.*\}\n"m
-    append!(decls, map(m -> m.match, eachmatch(attr_pattern, ir)))
-
-    # Fix internal @j_* names to simple @func style
-
-    final_ir = func_ir * join(decls)
-    return replace(final_ir, r"@j_([A-Za-z0-9_]+)_\d+" => s"@\1")
+    attr_pattern = r"^attributes\s+#\d+\s+=\s+\{.*\}\s*$"m
+    attrs = map(m -> m.match, eachmatch(attr_pattern, ir))
+    return LLVM_Meta(funcname, headers, funcs, alias_map, decl_map, attrs, ir)
 end
 
 """
@@ -232,36 +257,36 @@ Supported Julia types for `value`:
 
 Throws an error if the type is unsupported.
 """
-function make_modvar_def(name::String, value::T, is_const::Bool = false) where {T}
+function make_modvar_def(value::T, is_const::Bool = false) where {T}
     attri = is_const ? "constant" :  "global"
 
     if T == Float64
-        return "$(name) = $attri double $(value), align 8\n", "$(name) = external $attri double\n"
+        return "$attri double $(value), align 8\n", "external $attri double\n"
     elseif T == Float32
-        return "$(name) = $attri float $(value), align 4\n", "$(name) = external $attri float\n"
+        return "$attri float $(value), align 4\n", "external $attri float\n"
     elseif T == Int64 || T == UInt64
-        return "$(name) = $attri i64 $(value), align 8\n", "$(name) = external $attri i64\n"
+        return "$attri i64 $(value), align 8\n", "external $attri i64\n"
     elseif T == Int32 || T == UInt32
-        return "$(name) = $attri i32 $(value), align 4", "$(name) = external $attri i32\n"
+        return "$attri i32 $(value), align 4", "external $attri i32\n"
     elseif T == Int16 || T == UInt16
-        return "$(name) = $attri i16 $(value), align 2\n", "$(name) = external $attri i16\n"
+        return "$attri i16 $(value), align 2\n", "external $attri i16\n"
     elseif T == Int8 || T == UInt8
-        return "$(name) = $attri i8 $(value), align 1\n", "$(name) = external $attri i8\n"
+        return "$attri i8 $(value), align 1\n", "external $attri i8\n"
     elseif T == Bool
-        return "$(name) = $attri i8 $(Int(value)), align 1\n", "$(name) = external $attri i8\n"
+        return "$attri i8 $(Int(value)), align 1\n", "external $attri i8\n"
     elseif T == Int128 || T == UInt128
-        return "$(name) = $attri i128 $(value), align 16\n", "$(name) = external $attri i128\n"
+        return "$attri i128 $(value), align 16\n", "external $attri i128\n"
     elseif T <: Ptr
-        return "$(name) = $attri i8* null, align 8\n", "$(name) = external $attri i8*\n"
+        return "$attri i8* null, align 8\n", "external $attri i8*\n"
     elseif T == String
         n = sizeof(value)
         defi = "{i64, [$(n+1) x i8]} {i64 $n, [$(n+1) x i8]  c\"$value\0\"} , align 8"
-        return "$(name) = $attri $defi", "$(name) = external $attri {i64, [$(n+1) x i8]} \n"
+        return "$attri $defi", "external $attri {i64, [$(n+1) x i8]} \n"
     elseif !ismutabletype(T) && !isprimitivetype(T)
         N = sizeof(T)
         bytes = reinterpret(NTuple{N, UInt8}, value)
         body = join(["i8 $b" for b in bytes], ", ")
-        return "$(name) = $attri [$N x i8] [$body], align 16\n", "$(name) = external $attri [$N x i8]\n"
+        return "$attri [$N x i8] [$body], align 16\n", "external $attri [$N x i8]\n"
     else
         error("Unsupported type: $T")
     end

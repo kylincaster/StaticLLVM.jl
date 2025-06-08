@@ -28,13 +28,6 @@ function Base.show(io::IO, mi::ModVarInfo)
     print(io, "ModVar: `", mi.name, "` from ", mi.mod)
 end
 
-const SSDict = Dict{SubString{String}, SubString{String}}
-
-@inline function extract_alias(ir::String)
-    pattern = r"^@([^\ ]+)\s*=\s(.+)$"m
-    SSDict(m.captures[1] => m.captures[2] for m in eachmatch(pattern, ir))
-end
-
 """
     MethodInfo(m::Core.Method)
     MethodInfo(m::Core.Method, name::Symbol())
@@ -54,10 +47,8 @@ mutable struct MethodInfo
     mangled::Symbol           # Internal name used for LLVM IR lookup
     arg_types::Tuple          # Tuple of argument types (excluding function type)
     method::Core.Method       # The original method object
-    llvm_ir::String           # Extracted LLVM IR code as string
+    llvm::LLVM_Meta           # Extracted LLVM IR meta Information
     modvar_ids::Vector{UInt}   # List of module-level variable address in LLVM IR
-    alias::SSDict
-
     """
     Create a `MethodInfo` instance by compiling the given method and extracting its
     LLVM IR and related metadata.
@@ -72,7 +63,7 @@ mutable struct MethodInfo
     - Retrieves the LLVM IR as a string using `extract_llvm`.
     - Detects and collects any module-level variable references from the native code.
     """
-    function MethodInfo(m::Core.Method, name::Symbol=Symbol(""), debug = false)
+    function MethodInfo(m::Core.Method, name::Symbol=Symbol(""), debug::Bool= false, gc_policy::Symbol=:strict)
         # Extract the function and its argument types from method signature
         func = m.sig.parameters[1].instance
         arg_types = Tuple(m.sig.parameters[2:end])
@@ -95,14 +86,29 @@ mutable struct MethodInfo
             emit_llvm(m)
         end
         
-        alias_map = extract_alias(llvm_ir)
-        llvm_ir = extract_llvm(m, llvm_ir, false)
+        # check if the emited LLVM IR is static or try to strip all gc symbols
+        if !is_static_code(llvm_ir)
+            if gc_policy == :warn           
+                ; # @warn "Non-static LLVM IR detected in method $(m):\n$(llvm_ir)"
+            elseif gc_policy == :strict
+                ; # error("Non-static LLVM IR detected in method $(m):\n$(llvm_ir)")
+            elseif gc_policy == :strip
+                ;
+            elseif gc_policy == :strip_all
+                # Attempt to strip GC-related code from IR
+                llvm_ir = strip_gc_allocations(llvm_ir)
+            else
+                error("Invalid policy: `$(policy)`. Must be one of :warn, :strict, :strip, :strip_all.")
+            end
+        end
+
+        llvm = extract_llvm(m, llvm_ir, false)
 
         # Extract module-level variable IDs if present
         modvar_ids = occursin("@\"jl_global#", llvm_ir) ?
                      extract_modvars(emit_native(m)) : Int[]
 
-        return new(name, mangled, arg_types, m, llvm_ir, modvar_ids, alias_map)
+        return new(name, mangled, arg_types, m, llvm, modvar_ids)
     end
 end
 Base.isless(a::MethodInfo, b::MethodInfo) = a.name < b.name
@@ -160,7 +166,7 @@ function collect_modvar_pairs(mod::Module)
 
         # Generate mangled LLVM symbol and IR code
         mangled_name = mangle_NS(name, mod)
-        def_ir, decl_ir = make_modvar_def("@" * mangled_name, value)
+        def_ir, decl_ir = make_modvar_def(value)
 
         # Only compute source file path symbol once
         # file_path_sym === nothing && (file_path_sym = get_mod_filepath(mod))
@@ -341,101 +347,71 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
     gc_policy = config["policy"]
 
     # Initialize an empty dictionary to hold ModuleInfo for each Module
-    modinfo_map = IdDict{Module,ModuleInfo}()
+    module_map = IdDict{Module,ModuleInfo}()
 
     # n = length(method_map)
     # p = Progress(n; dt=n<100 ? 1000 : 1, desc="assembe methods...", barglyphs=BarGlyphs("[=> ]"), barlen=50)
 
     # Iterate over all methods and their mangled names
-    for (method, mangled_name) in method_map
-        mod = method.module
+    for (core_method, mangled_name) in method_map
+        mod = core_method.module
 
         # Create a new ModuleInfo if this module is not already registered
-        if !haskey(modinfo_map, mod)
-            modinfo_map[mod] = ModuleInfo(mod)
+        if !haskey(module_map, mod)
+            module_map[mod] = ModuleInfo(mod)
         end
-
-        minfo = modinfo_map[mod]
 
         # Create MethodInfo for this method
-        method_info = MethodInfo(method, mangled_name, debug)
-
-        # check if the emited LLVM IR is static or try to strip all gc symbols
-        if !is_static_code(method_info.llvm_ir)
-            if gc_policy == :warn           
-                @warn "Non-static LLVM IR detected in method $(method):\n$(method_info.llvm_ir)"
-            elseif gc_policy == :strict
-                error("Non-static LLVM IR detected in method $(method):\n$(method_info.llvm_ir)")
-            elseif gc_policy == :strip
-                ;
-            elseif gc_policy == :strip_all
-                # Attempt to strip GC-related code from IR
-                method_info.llvm_ir = strip_gc_allocations(method_info.llvm_ir)
-            else
-                error("Invalid policy: `$(policy)`. Must be one of :warn, :strict, :strip, :strip_all.")
-            end
-        end
-
-        if is_memory_alloc(method_info.llvm_ir)
-            replace_memory_alloc(method_info)
-        end
+        method = MethodInfo(core_method, mangled_name, debug, gc_policy)
 
         # Register the method in the module's method list
-        push!(minfo.methods, method_info)
+        push!(module_map[mod].methods, method)
 
-
-        # Prepare to patch global variables used by this method
-        new_names = String[]       # Holds the mangled names
-        llvm_decls = String[]      # Holds LLVM declarations of global variables
+        if is_memory_alloc(method.llvm.raw_ir)
+            replace_memory_alloc(method)
+        end
 
         # Process all global variables referenced by this method
-        for var_id in method_info.modvar_ids
+        for var_id in method.modvar_ids
+            # explicitly defined as module variables as jl_global#XXX
             if haskey(modvar_map, var_id)
                 modvar = modvar_map[var_id]
-                var_mod = modvar.mod
+                modvar_mod = modvar.mod
 
                 # Ensure the module containing the global var has ModuleInfo
-                if !haskey(modinfo_map, var_mod)
-                    modinfo_map[var_mod] = ModuleInfo(var_mod)
+                if !haskey(module_map, modvar_mod)
+                    module_map[modvar_mod] = ModuleInfo(modvar_mod)
                 end
-                var_minfo = modinfo_map[var_mod]
+                push!(module_map[modvar_mod].modvars, modvar)
 
-                # Collect the LLVM declaration and name for later substitution
-                push!(llvm_decls, modvar.llvm_decl)
-                push!(new_names, modvar.mangled)
-                push!(var_minfo.modvars, modvar)
+                method.llvm.alias[modvar.mangled] = modvar.llvm_decl
             else
-                # Attempt to recover the global object using its address
+                # implicity defined constants
                 obj = recover_heap_object(var_id)
                 if obj === nothing 
                     @warn("Failed to recover global variable with ID = $(var_id) for method: $(method)")
                 else
-                    modvars = modinfo_map[mod].modvars
+                    modvars = module_map[mod].modvars
 
                     # Generate a unique symbolic name and mangle it for LLVM IR usage
                     name = Symbol("_global_$(length(modvars))")
                     mangled_name = mangle_NS(name, mod)
 
                     # Generate the LLVM definition and declaration for this global variable
-                    def_ir, decl_ir = make_modvar_def("@" * mangled_name, obj, true)
+                    def_ir, decl_ir = make_modvar_def(obj, true)
                     
                     # Create a ModVarInfo and register it
                     modvar = ModVarInfo(name, mod, mangled_name, def_ir, decl_ir)
                     modvar_map[var_id] = modvar
-
-                    push!(llvm_decls, decl_ir)
-                    push!(new_names, mangled_name)
                     push!(modvars, modvar)
+
+                    method.llvm.alias[mangled_name] = decl_ir
                 end
             end
-        end
+        end # var_id
+    end # method_map
 
-        # Combine LLVM declarations and apply global variable names replacements in method IR
-        method_info.llvm_ir = join(llvm_decls) * replace_globals(method_info.llvm_ir, new_names; policy = gc_policy)
-        # next!(p)
-    end
-
-    return modinfo_map
+    return module_map
 end
 
 """
@@ -483,6 +459,25 @@ function is_memory_alloc(ir::String)::Bool
     return false
 end
 
+function make_llvm(method::MethodInfo)::String
+    llvm = method.llvm
+    buf = IOBuffer()
+    for (k, v) in llvm.alias
+        println(buf, "@$k = $v")
+    end
+    for (header, func) in zip(llvm.headers, llvm.funcs)
+        println(buf, header)
+        println(buf, func)
+    end
+    for v in values(llvm.decls)
+        println(buf, v)
+    end
+    for s in llvm.attrs
+        println(buf, s)
+    end
+    String(take!(buf))
+end
+
 """
     dump_llvm_ir(modinfo::ModuleInfo, output_dir::String, check::Bool)
 
@@ -500,7 +495,7 @@ function dump_llvm_ir(modinfo::ModuleInfo, output_dir::String, check::Bool)
     # Write each method's IR into its own file
     for m in modinfo.methods
         method_path = joinpath(output_dir, String(m.mangled) * ".ll")
-        write_if_changed(method_path, m.llvm_ir, check)
+        write_if_changed(method_path, make_llvm(m), check)
     end
     return n + length(modinfo.methods)
 end
