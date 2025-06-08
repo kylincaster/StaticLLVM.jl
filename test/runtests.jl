@@ -75,4 +75,41 @@ end
     @test StaticLLVM.recover_heap_object(p)[] == v[]
 end
 
+@testitem "GenericMemory Layout" begin
+    mutable struct A 
+        a::Int
+        b::Float64
+    end
+    function Layout_test(::Type{T0}) where {T0}
+        gm_T = GenericMemory{:not_atomic, T0, Core.AddrSpace{Core}(0x00)}
+        addr = pointer_from_objref(gm_T) |> Ptr{UInt}
+        svec = unsafe_load(addr, 3) |> Ptr{UInt} # to svec_pointer 3
+        @test svec == Ptr{UInt}(pointer_from_objref(gm_T.parameters))
+        T = unsafe_load(svec, 3) |> Ptr{UInt} # to second element
+        @test T == Ptr{UInt}(pointer_from_objref(T0))
+        layout = unsafe_load(T, 6) |> Ptr{UInt64} # to layout element
+        @test layout == Ptr{UInt64}(T0.layout)
+        elsize = unsafe_load(Ptr{UInt32}(layout), 1)
+        @test elsize == sizeof(T0)
+
+        name0 = T0.name
+        name = unsafe_load(T, 1) |> Ptr{UInt64} # to Typename
+        @test name == Ptr{Int64}(pointer_from_objref(name0))
+        @test unsafe_load(name, 1) == pointer_from_objref(name0.name) |> UInt
+        @test unsafe_load(name, 2) == pointer_from_objref(name0.module) |> UInt
+        @test unsafe_load(name, 3) == pointer_from_objref(name0.names) |> UInt
+        @test unsafe_load(name, 6) == pointer_from_objref(name0.wrapper) |> UInt
+        @test unsafe_load(name, 10) == pointer_from_objref(name0.mt) |> UInt
+        @test unsafe_load(Ptr{Int}(name), 12) == name0.hash
+        p_n_uninitialized = Ptr{Int32}(name + 12*sizeof(Int))
+        pflag = Ptr{UInt8}(p_n_uninitialized + sizeof(Int32))
+        pflag2 = name + 12*sizeof(Int) + sizeof(Int32)
+        @test pflag2 == pflag
+        @test unsafe_load(pflag, 1) == name0.flags
+    end
+    Layout_test(Int)
+    Layout_test(NTuple{5, Float64})
+    Layout_test(A)
+end
+
 @run_package_tests

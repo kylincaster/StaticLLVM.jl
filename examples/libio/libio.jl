@@ -2,6 +2,7 @@ module LibIO
 
 using StaticTools
 
+
 """
     logfile(input_str::Ptr{UInt8}) -> Int
 

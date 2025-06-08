@@ -10,6 +10,7 @@ include("utils.jl")
 include("extract.jl")
 include("mangling.jl")
 include("meta.jl")
+include("generic_memory.jl")
 
 # Default configuration for LLVM compilation and module processing
 const DEFAULT_CONFIG = Dict{String,Any}(
@@ -277,7 +278,8 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
     # Step 3: Collect methods and rename `main` method
     t0 = time()
     method_map = IdDict{Core.Method,Symbol}()
-    main_method = which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
+    all_mains = methods(root_mod._main_)
+    main_method = length(all_mains) == 1 ? all_mains[1] : which(root_mod._main_, (Int, Ptr{Ptr{UInt8}}))
     main_method.name = :main
     collect_methods!(method_map, main_method)
     main_method.name = :main
@@ -315,6 +317,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
     elseif compile_mode != :none
         error("Unknown compile_mode: $compile_mode. Use :none, :onefile, or :makefile.")
     end
+    return (modules=modinfo_map, modvars = modvar_map)
 end
 
 

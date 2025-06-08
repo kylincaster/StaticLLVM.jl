@@ -14,7 +14,7 @@ module gc_strip
     @inline function main(n::Int)
         objA = make_A(n)
         objB = make_B(n+3)
-        @inbounds printf("argc = n\n\0")
+        @inbounds printf("argc = %d\n", n)
         printf(c"objA.a = %d\n", objA.a)
         printf(c"objB.a = %d, objB.A.a = %d\n", objB.a, objB.A.a)
     end

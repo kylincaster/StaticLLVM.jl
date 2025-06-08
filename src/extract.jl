@@ -105,7 +105,7 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)::Str
     end
 
     # === Collect external function declarations and attributes ===
-    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_))([^\s(]+)"""m
+    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_|julia.\w*_gc_frame))([^\s(]+)"""m
     decls = String[]
 
     for m in eachmatch(decl_pattern, ir)
@@ -163,7 +163,8 @@ function strip_gc_allocations(ir::String)::String
         " %pgcstack\\d*( = |,)",
         " %ptls_field\\d*( = |,)",
         "%ptls_load\\d* = ",
-        "%gcframe1\\d*( = |,)",
+        "%gcframe\\d*( = |,)",
+        "%jlcallframe\\d*( = |,)",
         "%task.gcstack\\d*( = |,)",
         "%frame.prev\\d*( = |,)",
         "%gc_slot_addr_\\d*( = |,)"
@@ -286,7 +287,7 @@ Replace occurrences of Julia global variables in LLVM IR code with new names.
 - Throws an error if the number of unique globals found does not match the number of new names provided.
 
 """
-function replace_globals(llvm_ir::String, new_names::Vector{String})::String
+function replace_globals(llvm_ir::String, new_names::Vector{String}; policy::Symbol=:strict)::String
     # Early return if no new names are provided
     isempty(new_names) && return llvm_ir
 
@@ -310,7 +311,11 @@ function replace_globals(llvm_ir::String, new_names::Vector{String})::String
 
     # Verify the number of found globals matches the replacements provided
     if index != length(new_names)
-        error("Mismatch in global variable count: found $index but got $(length(new_names)) replacements.\nLLVM IR:\n$llvm_ir")
+        if policy == :strict
+            error("Mismatch in global variable count: found $index but got $(length(new_names)) replacements.\nLLVM IR:\n$llvm_ir")
+        else
+            @warn("Mismatch in global variable count: found $index but got $(length(new_names)) replacements.\nLLVM IR:\n$llvm_ir")
+        end
     end
 
     # Perform all replacements in the llvm_ir string

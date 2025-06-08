@@ -28,6 +28,13 @@ function Base.show(io::IO, mi::ModVarInfo)
     print(io, "ModVar: `", mi.name, "` from ", mi.mod)
 end
 
+const SSDict = Dict{SubString{String}, SubString{String}}
+
+@inline function extract_alias(ir::String)
+    pattern = r"^@([^\ ]+)\s*=\s(.+)$"m
+    SSDict(m.captures[1] => m.captures[2] for m in eachmatch(pattern, ir))
+end
+
 """
     MethodInfo(m::Core.Method)
     MethodInfo(m::Core.Method, name::Symbol())
@@ -49,6 +56,7 @@ mutable struct MethodInfo
     method::Core.Method       # The original method object
     llvm_ir::String           # Extracted LLVM IR code as string
     modvar_ids::Vector{UInt}   # List of module-level variable address in LLVM IR
+    alias::SSDict
 
     """
     Create a `MethodInfo` instance by compiling the given method and extracting its
@@ -77,17 +85,24 @@ mutable struct MethodInfo
         name = name === Symbol("") ? mangled : name
 
         # Extract LLVM IR and measure the time taken
-        origin_llvm = emit_llvm(m)
-        llvm_ir = extract_llvm(m, origin_llvm, false)
-        debug && open(string(mangled)*".debug_ll", "w") do f
-            write(f, origin_llvm)
+        llvm_ir = if debug
+            origin_llvm = emit_llvm(m; clean=false)
+            open(string(mangled)*".debug_ll", "w") do f
+                write(f, origin_llvm)
+            end
+            strip_comments(origin_llvm)
+        else
+            emit_llvm(m)
         end
+        
+        alias_map = extract_alias(llvm_ir)
+        llvm_ir = extract_llvm(m, llvm_ir, false)
 
         # Extract module-level variable IDs if present
         modvar_ids = occursin("@\"jl_global#", llvm_ir) ?
                      extract_modvars(emit_native(m)) : Int[]
 
-        return new(name, mangled, arg_types, m, llvm_ir, modvar_ids)
+        return new(name, mangled, arg_types, m, llvm_ir, modvar_ids, alias_map)
     end
 end
 Base.isless(a::MethodInfo, b::MethodInfo) = a.name < b.name
@@ -99,7 +114,7 @@ Base.:(==)(a::MethodInfo, b::MethodInfo) = a.mangled == b.mangled
 Pretty-print `MethodInfo` to the given IO stream in a readable format.
 """
 function Base.show(io::IO, mi::MethodInfo)
-    print(io, "Method: ", mi.name, mi.argv)
+    print(io, "Method: ", mi.name, mi.arg_types)
 end
 
 """
@@ -158,6 +173,10 @@ function collect_modvar_pairs(mod::Module)
     return globals
 end
 
+const base_skip_functions = (
+    :throw_boundserror,
+)
+
 """
     collect_methods!(name_map::IdDict{Method, Symbol}, method::Method)
 
@@ -176,6 +195,7 @@ an explicit name map to be passed in.
 """
 function collect_methods!(name_map::IdDict{Method,Symbol}, method::Method, verbose = false)
     haskey(name_map, method) && return  # Avoid reprocessing
+    method.module == Base && (method.name in base_skip_functions) && return
 
     # Extract function and argument types
     println(method)
@@ -194,7 +214,8 @@ function collect_methods!(name_map::IdDict{Method,Symbol}, method::Method, verbo
     # Recursively gather methods from MethodInstances
     for obj in method.roots
         if obj isa Core.MethodInstance
-            collect_methods!(name_map, obj.def, verbose)
+            mt = obj.def
+            !(mt.module == Core) && collect_methods!(name_map, mt, verbose)
         end
     end
 end
@@ -292,7 +313,6 @@ Used internally by `recover_heap_object`.
     end
 end
 
-
 """
     assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Method,Symbol}, modvar_map::IdDict{UInt,ModVarInfo}, check_ir::Bool = true) -> IdDict{Module, ModuleInfo}
 
@@ -342,7 +362,6 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
 
         # check if the emited LLVM IR is static or try to strip all gc symbols
         if !is_static_code(method_info.llvm_ir)
-
             if gc_policy == :warn           
                 @warn "Non-static LLVM IR detected in method $(method):\n$(method_info.llvm_ir)"
             elseif gc_policy == :strict
@@ -355,6 +374,10 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
             else
                 error("Invalid policy: `$(policy)`. Must be one of :warn, :strict, :strip, :strip_all.")
             end
+        end
+
+        if is_memory_alloc(method_info.llvm_ir)
+            replace_memory_alloc(method_info)
         end
 
         # Register the method in the module's method list
@@ -394,7 +417,7 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
                     mangled_name = mangle_NS(name, mod)
 
                     # Generate the LLVM definition and declaration for this global variable
-                    def_ir, decl_ir = make_modvar_def("@" * mangled_name, obj)
+                    def_ir, decl_ir = make_modvar_def("@" * mangled_name, obj, true)
                     
                     # Create a ModVarInfo and register it
                     modvar = ModVarInfo(name, mod, mangled_name, def_ir, decl_ir)
@@ -408,7 +431,7 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
         end
 
         # Combine LLVM declarations and apply global variable names replacements in method IR
-        method_info.llvm_ir = join(llvm_decls) * replace_globals(method_info.llvm_ir, new_names)
+        method_info.llvm_ir = join(llvm_decls) * replace_globals(method_info.llvm_ir, new_names; policy = gc_policy)
         # next!(p)
     end
 
@@ -453,6 +476,11 @@ function is_static_code(ir::String)::Bool
     substrs = Regex(raw"(@ijl_|inttoptr\s*\(i64\s*(\d+)\s*to\s*ptr\)|%pgcstack = )")    
     occursin(substrs, ir) && return false
     return true
+end
+
+function is_memory_alloc(ir::String)::Bool
+    occursin(r"@\"\+Core\.GenericMemory#(\d+)\.jit\"", ir) && return true
+    return false
 end
 
 """

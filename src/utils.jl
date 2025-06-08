@@ -65,6 +65,7 @@ function find_matching_brace(s::String, start_pos::Int=1)::Int
     return -1  # No matching closing brace found
 end
 
+
 """
     strip_comments(ir::String) -> String
 
