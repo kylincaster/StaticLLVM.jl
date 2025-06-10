@@ -76,10 +76,12 @@ module Example
     end
 end
 
-# ------ make.jl ------
 Example._main_(3)
+# ------ make.jl ------
 
 using StaticLLVM
+
+# include("Example.jl") or using Example
 
 config = StaticLLVM.get_config(;
     dir = ".",                  # Working directory
@@ -92,6 +94,17 @@ config = StaticLLVM.get_config(;
 )
 
 build(Example, config)
+```
+Thus, a standalone program `Example` is generated.
+``` Bash
+> Example 1
+fib[1] = 1
+fib[2] = 1
+fib[3] = 2
+fib[4] = 3
+fib[5] = 5
+fib[6] = 8
+fib[7] = 13
 ```
 
 In practice:

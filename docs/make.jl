@@ -3,18 +3,27 @@ using Documenter
 using StaticLLVM
 
 #DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true)
+DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true)
 
-makedocs(
+makedocs(;
     modules=[StaticLLVM],
-    sitename = "StaticLLVM.jl",
-    format = Documenter.HTML(),
-    remotes = nothing,
-    checkdocs=:all,
+    authors="Kylincaster",
+    repo="https://github.com/kylincaster/StaticLLVM.jl/blob/{commit}{path}#{line}",
+    sitename="StaticLLVM.jl",
+    format=Documenter.HTML(;
+        prettyurls=get(ENV, "CI", "false") == "true",
+        canonical="https://kylincaster.github.io/StaticTools.jl",
+        assets=String[],
+    ),
     warnonly = true,
     pages = [
         "Home" => "index.md",
         "API Reference" => "api.md",
     ]
-    ; debug = false,
-    repo = ""
 )
+
+deploydocs(;
+    repo="github.com/kylincaster/StaticLLVM.jl",
+    devbranch="main",
+)
+
