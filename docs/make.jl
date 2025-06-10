@@ -2,7 +2,6 @@
 using Documenter
 using StaticLLVM
 
-#DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true)
 DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true)
 
 makedocs(;
