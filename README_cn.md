@@ -8,7 +8,9 @@
 
 ## Julia 内部 LLVM IR 代码转换器
 
-**StaticLLVM.jl** 提供了一个轻量级框架，用于分析和修改由 Julia 内部函数生成的 LLVM IR。它通过识别并替换特定的结构（如与垃圾回收相关的指令或 Julia 内建函数）为标准等价物（如 `malloc`、`printf` 等）来实现对 Julia 生成的 IR 的转换。
+**StaticLLVM.jl** 提供了一个轻量级框架，用于分析和修改由 Julia 内部所生成的 LLVM IR。
+它通过识别并替换特定的结构（如与垃圾回收相关的指令或 Julia 内部函数）为C语言中的标准库函数（如 `malloc`、`printf` 等）来
+实现对 Julia 生成的静态 IR 的转换。
 
 > 🚧 **注意**：本项目正在积极开发中，许多组件仍处于实验阶段或不完整，欢迎反馈和贡献！
 
@@ -19,7 +21,7 @@
 - 🔧 **LLVM IR 生成**：通过 Julia 内部编译管线将 Julia 函数编译成 LLVM IR。  
 - 🧠 **IR 转换引擎**：  
   - 识别并替换特定的 Julia 内部函数（如垃圾回收调用）。  
-  - 将检测到的模块级变量（全局变量/常量）插入 IR。  
+  - 将检测到的模块级变量（全局变量/常量）替换并插入 IR。  
   - 用标准 C 库调用（如 `malloc`、`printf`）替换 Julia 内建函数。  
   - 消除或简化与垃圾回收相关的指令。  
 - 🧹 **IR 清理与优化**：  
@@ -114,11 +116,11 @@ fib[7] = 13
 
 实际使用流程：
 
-1. 将程序定义为 Julia 模块。  
+1. 将代码封装为 Julia 模块。  
 2. 使用 `include(...)` 或 `using` 加载模块。  
-3. 调用 `build(MyModule, config)` 生成并（可选）编译 LLVM IR。
+3. 调用 `build(MyModule, config)` 生成并编译 LLVM IR。
 
-函数 `_main_()` 将作为 LLVM 程序的入口点。
+其中，`MyModule`中函数 `_main_()` 将作为 LLVM 程序的入口点。
 
 ---
 

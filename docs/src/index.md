@@ -1,7 +1,5 @@
 # StaticLLVM.jl
 
-
-
 **StaticLLVM.jl** provides a lightweight framework for analyzing and modifying LLVM IR generated from Julia internal functions. It enables transformations on Julia-emitted IR by identifying and replacing specific constructs—such as GC-related instructions or Julia intrinsics—with standard equivalents like `malloc`, `printf`, etc.
 
 > 🚧 **Note**: This project is under active development. Many components are experimental or incomplete. Feedback and contributions are welcome!
@@ -37,7 +35,7 @@ build(YourPackageName.some_module)
 - Julia (currently tested on v1.11.5)
 - Clang or compatible compiler (e.g., Intel oneAPI, AMD compiler)
 
-### Example
+## Example
 
 ```julia
 # ------ Example.jl ------

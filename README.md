@@ -1,6 +1,6 @@
 # StaticLLVM
 
-[中文版](./README.md)
+[中文版](./README_cn.md)
 **StaticLLVM.jl** 是一个可以将 Julia 代码翻译并转换为静态 LLVM IR 中间表示并获得能独立运行的程序的库。
 
 [![Docs][docs-dev-img]][docs-dev-url]
