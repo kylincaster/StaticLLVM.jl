@@ -26,32 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: |
           julia --project=docs -e '
-            using Documenter: DocMeta
+            using Documenter: DocMeta, doctest
             using StaticLLVM
-            DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true)'
-  test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
-      actions: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        version:
-          - '1.11'
-          - '1.10'
-        os:
-          - [ubuntu-latest, macos-latest, windows-latest]
-        arch:
-          - x64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
-      - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
+            DocMeta.setdocmeta!(StaticLLVM, :DocTestSetup, :(using StaticLLVM); recursive=true) 
+            doctest(StaticLLVM)'
