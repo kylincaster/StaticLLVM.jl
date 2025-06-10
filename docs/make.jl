@@ -22,7 +22,7 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/kylincaster/StaticLLVM.jl",
+    repo="github.com/kylincaster/StaticLLVM.jl.git",
     devbranch="main",
 )
 
