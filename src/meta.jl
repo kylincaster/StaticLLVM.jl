@@ -40,7 +40,6 @@ A mutable struct that stores metadata and compiled LLVM IR information for a spe
 - `arg_types::Tuple`: A tuple of argument types (excluding the function type), derived from the method signature.
 - `method::Core.Method`: The original Julia `Method` object
 - `llvm_ir::String`: The LLVM IR code generated for the method, extracted as a string.
-- `modvar_ids::Vector{Int}`: A list of module-level variable addresses (e.g., `jl_global#`) found in the LLVM IR.
 """
 mutable struct MethodInfo
     name::Symbol              # Friendly name (or fallback to mangled name)
@@ -48,7 +47,6 @@ mutable struct MethodInfo
     arg_types::Tuple          # Tuple of argument types (excluding function type)
     method::Core.Method       # The original method object
     llvm::LLVM_Meta           # Extracted LLVM IR meta Information
-    modvar_ids::Vector{UInt}   # List of module-level variable address in LLVM IR
     """
     Create a `MethodInfo` instance by compiling the given method and extracting its
     LLVM IR and related metadata.
@@ -103,12 +101,11 @@ mutable struct MethodInfo
         end
 
         llvm = extract_llvm(m, llvm_ir, false)
-
         # Extract module-level variable IDs if present
-        modvar_ids = occursin("@\"jl_global#", llvm_ir) ?
-                     extract_modvars(emit_native(m)) : Int[]
+        #modvar_ids = occursin("@\"jl_global#", llvm_ir) ?
+        #             extract_modvars(emit_native(m)) : Int[]
 
-        return new(name, mangled, arg_types, m, llvm, modvar_ids)
+        return new(name, mangled, arg_types, m, llvm)
     end
 end
 Base.isless(a::MethodInfo, b::MethodInfo) = a.name < b.name
@@ -371,8 +368,10 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
             replace_memory_alloc(method)
         end
 
+        llvm = method.llvm
         # Process all global variables referenced by this method
-        for var_id in method.modvar_ids
+        glob_pairs = Pair{String, String}[]
+        for (var_id, glob_names) in method.llvm.addrs[:glob]
             # explicitly defined as module variables as jl_global#XXX
             if haskey(modvar_map, var_id)
                 modvar = modvar_map[var_id]
@@ -384,10 +383,12 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
                 end
                 push!(module_map[modvar_mod].modvars, modvar)
 
-                method.llvm.alias[modvar.mangled] = modvar.llvm_decl
+                llvm.alias[modvar.mangled] = modvar.llvm_decl
+                push!(glob_pairs, glob_names=>modvar.mangled)
             else
                 # implicity defined constants
                 obj = recover_heap_object(var_id)
+                println(method, " ", obj)
                 if obj === nothing 
                     @warn("Failed to recover global variable with ID = $(var_id) for method: $(method)")
                 else
@@ -404,9 +405,14 @@ function assemble_modinfo(config::Dict{String,Any}, method_map::IdDict{Core.Meth
                     modvar = ModVarInfo(name, mod, mangled_name, def_ir, decl_ir)
                     modvar_map[var_id] = modvar
                     push!(modvars, modvar)
-
-                    method.llvm.alias[mangled_name] = decl_ir
+                    llvm.alias[mangled_name] = decl_ir
+                    
+                    push!(glob_pairs, glob_names=>modvar.mangled)
                 end
+            end
+            n_funcs = length(llvm.funcs)
+            for i in 1:n_funcs
+                llvm.funcs[i] = replace(llvm.funcs[i], glob_pairs...)
             end
         end # var_id
     end # method_map
@@ -448,13 +454,13 @@ Determines whether the given LLVM IR string is "static", i.e., free from dynamic
 - `true` if the IR contains no known dynamic patterns.
 - `false` if any non-static signature (like `@ijl_`) is found.
 """
-function is_static_code(ir::String)::Bool
+@inline function is_static_code(ir::String)::Bool
     substrs = Regex(raw"(@ijl_|inttoptr\s*\(i64\s*(\d+)\s*to\s*ptr\)|%pgcstack = )")    
     occursin(substrs, ir) && return false
     return true
 end
 
-function is_memory_alloc(ir::String)::Bool
+@inline function is_memory_alloc(ir::String)::Bool
     occursin(r"@\"\+Core\.GenericMemory#(\d+)\.jit\"", ir) && return true
     return false
 end
@@ -468,6 +474,7 @@ function make_llvm(method::MethodInfo)::String
     for (header, func) in zip(llvm.headers, llvm.funcs)
         println(buf, header)
         println(buf, func)
+        println(buf, "}\n\n")
     end
     for v in values(llvm.decls)
         println(buf, v)
@@ -489,8 +496,9 @@ Write LLVM IR files for a given `ModuleInfo` instance.
 function dump_llvm_ir(modinfo::ModuleInfo, output_dir::String, check::Bool)
     # Write module variable IR to a single .ll file
     modvar_path = joinpath(output_dir, String(modinfo.mangled) * ".ll")
-    modvar_ir = join(v.llvm_def for v in modinfo.modvars)
-    n = write_if_changed(modvar_path, modvar_ir, check)
+
+    ir_from_modvars = join("@$(v.mangled) = $(v.llvm_def)" for v in modinfo.modvars)
+    n = write_if_changed(modvar_path, ir_from_modvars, check)
 
     # Write each method's IR into its own file
     for m in modinfo.methods

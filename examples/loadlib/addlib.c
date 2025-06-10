@@ -1,8 +1,10 @@
-#ifndef ADDLIB_H
-#define ADDLIB_H
+// To compile into library
 // gcc -DADDLIB_EXPORTS -shared -o addlib.dll addlib.c
 
-// 用于导出符号（Windows特有）
+#ifndef ADDLIB_H
+#define ADDLIB_H
+
+// To Export Symbols in Windows
 #ifdef _WIN32
   #ifdef ADDLIB_EXPORTS
     #define ADDLIB_API __declspec(dllexport)
@@ -13,7 +15,7 @@
   #define ADDLIB_API
 #endif
 
-// 导出的函数
+// To Export Function
 ADDLIB_API int add(int a, int b);
 
 #endif // ADDLIB_H

@@ -168,7 +168,7 @@ function compile_llvm_files(config::Dict)
     result = run_command(cmd; verbose=true)
     if result.success
         println("Successfully built `$output_name`.")
-        clean_cache(source_dir)
+        config["clean_cache"] && clean_cache(source_dir)
     else
         println("Failed to compile `$output_name`: ", result.output)
     end
@@ -292,8 +292,8 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
 
     # Step 4: Assemble module info (returns :: IdDict{Module, ModuleInfo})
     t0 = time()
-    modinfo_map = assemble_modinfo(config, method_map, modvar_map)
-    println("\nAssembled $(length(modinfo_map)) modules in $(round(time() - t0, digits=4))s.")
+    module_map = assemble_modinfo(config, method_map, modvar_map)
+    println("\nAssembled $(length(module_map)) modules in $(round(time() - t0, digits=4))s.")
 
     # Step 5: Dump LLVM IR files
     out_dir = config["dir"]
@@ -301,7 +301,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
 
     println("Writing LLVM IR files to `$(out_dir)`...")
     file_count = 0
-    for (i, m) in enumerate(values(modinfo_map))
+    for (i, m) in enumerate(values(module_map))
         println("  [$i] Dumping LLVM IR from module: $(m)")
         file_count += dump_llvm_ir(m, out_dir, true)
     end
@@ -317,7 +317,7 @@ function build(mod::Module=Main, config::Dict{String,Any}=get_config())
     elseif compile_mode != :none
         error("Unknown compile_mode: $compile_mode. Use :none, :onefile, or :makefile.")
     end
-    return (modules=modinfo_map, modvars = modvar_map)
+    return (modules=module_map, modvars = modvar_map)
 end
 
 

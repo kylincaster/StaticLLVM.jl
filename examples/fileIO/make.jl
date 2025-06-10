@@ -1,13 +1,15 @@
+
 using StaticLLVM
 
-include("./lib_load.jl")
+include("fileIO.jl")
 
 config = StaticLLVM.get_config(;
     dir=".",
     compile_mode=:onefile,
-    clean_cache = false
+    clean_cache = false,
+    debug=false
 )
 
 # compile mode = onefile, makefile
 # clean = true or false
-build(LibLoad, config)
+build(FileIO, config)

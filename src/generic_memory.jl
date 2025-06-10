@@ -35,7 +35,7 @@ function replace_GenericMemory_instance(blocks_map, block::LLVM_Block)
     for (i, line) in enumerate(lines)
         if 0 < m.offset - n < length(line) + 1
             pos = findfirst('=', line)
-            pos isa Nothing && error("cannot capture GenericMemory lod\n expect: ` %.instance = load atomic ptr, ptr getelementptr inbounds (ptr, ptr @\"+Core.GenericMemory#1222.jit\", i64 4) unordered, align 32`\n obtain: `$(line)`\n ")
+            pos isa Nothing && error("cannot capture GenericMemory obj\n expect: ` %.instance = load atomic ptr, ptr getelementptr inbounds (ptr, ptr @\"+Core.GenericMemory#1222.jit\", i64 4) unordered, align 32`\n obtain: `$(line)`\n ")
             lines[i] = line[1:pos] * " bitcast ptr @GenericMemoryInstance to ptr"
 
             jline = lines[i+2]
@@ -67,9 +67,12 @@ function replace_GenericMemory_alloc(block::LLVM_Block, pairs)
     tag = ir[1:findnext(':', ir, 1)-1]
 
     idx = findfirst(p -> p.first == GenericMemoryId, pairs)
-    is_mutable = pairs[idx].second == 0 # is mutable or abstract type
-    elsize = is_mutable ? sizeof(Int) : pairs[idx].second
-    alloc = "malloc" # is_mutable ? "calloc" : "malloc"
+    is_mutable_or_abstract = pairs[idx].second == 0 # is mutable or abstract type
+    elsize, alloc, alloc_config = if is_mutable_or_abstract
+        pairs[idx].second, "calloc", ",i64 0"
+    else
+        sizeof(Int), "malloc", ""
+    end
 
     offset = m.offset
     pos_nextline = findnext('\n', ir, m.offsets[3])
@@ -77,7 +80,7 @@ function replace_GenericMemory_alloc(block::LLVM_Block, pairs)
     new_code = """
     %"TMP::_data_size_$(tag)" = mul i64 %$nitem, $elsize
     %$mem = call ptr @malloc(i64 16)
-    %"TMP::_data_ptr_$(tag)" = call ptr @$(alloc)(i64 %"TMP::_data_size_$(tag)")
+    %"TMP::_data_ptr_$(tag)" = call ptr @$(alloc)(i64 %"TMP::_data_size_$(tag)" $alloc_config)
     %"TMP::_field_ptr_$(tag)" = getelementptr i8, ptr %$mem, i64 8
     store ptr %"TMP::_data_ptr_$(tag)", ptr %"TMP::_field_ptr_$(tag)", align 8
     """
@@ -110,56 +113,43 @@ function filter_block(block::LLVM_Block)::Bool
     return true
 end
 
-function write_func_body(result, body, GenericMemory_to_size)
-    blocks = split_llvm_blocks(body)
-    blocks_map = IdDict(block.lable=>block for block in blocks)
-    for block in blocks
-        replace_GenericMemory_instance(blocks_map, block) && continue
-        replace_GenericMemory_alloc(block, GenericMemory_to_size) && continue
-        filter_block(block)
-    end
-    for block in blocks
-        print(result, block.ir)
-    end
-end
-
 function replace_memory_alloc(method::MethodInfo)
-    llvm = methods.llvm
+    llvm = method.llvm
     GenericMemory_to_size = Pair{SubString{String}, UInt}[]
-    for (k, v) in llvm.alias
-        if occursin("+Core.GenericMemory#", k)
-            addr = parse(Int, split(String(v))[6], ) |> Ptr{UInt}
-            svec = unsafe_load(addr, 3) |> Ptr{UInt} # to svec_pointer 3
-            T = unsafe_load(svec, 3) |> Ptr{UInt} # to to second element
-            layout = unsafe_load(T, 6) |> Ptr{UInt32} # to to layout element
+    for (addr, addr_name) in llvm.addrs[:generic_memory]
+        svec = unsafe_load(Ptr{UInt}(addr), 3) |> Ptr{UInt} # to svec_pointer 3
+        T = unsafe_load(svec, 3) |> Ptr{UInt} # to to second element
+        layout = unsafe_load(T, 6) |> Ptr{UInt32} # to to layout element
             
-            name = unsafe_load(T, 1) |> Ptr{UInt64} # to Typename
-            pflag = Ptr{UInt8}(name + 12*sizeof(Int) + sizeof(Int32))
-            is_mutable = (unsafe_load(pflag, 1) & 0x3) != 0
-
-            elsize = is_mutable ? 0 : unsafe_load(layout, 1)
-            elsize > 256 && @warn ("Elsize ($elsize) from GenericMemory at $addr from $method, is exceed 256")
-            println(method, "elsize = ", elsize)
-            push!(GenericMemory_to_size, k => elsize)
+        name = unsafe_load(T, 1) |> Ptr{UInt64} # to Typename
+        pflag = Ptr{UInt8}(name + 12*sizeof(Int) + sizeof(Int32))
+        is_mutable_or_abstract = (unsafe_load(pflag, 1) & 0x3) != 0
+            
+        # add the calloc for mutable_or_abstract
+        elsize = if is_mutable_or_abstract
+            llvm.decls["calloc"] = "declare ptr @calloc(i64, i64)\n"
+            0
+        else
+            unsafe_load(layout, 1)
         end
+
+        elsize > 256 && @warn ("Elsize ($elsize) from GenericMemory at $addr from $method, is exceed 256")
+        # println(method, "elsize = ", elsize)
+        push!(GenericMemory_to_size, addr_name => elsize)
     end
 
     isempty(GenericMemory_to_size) && error("cannot find Core.GenericMemory alias from $method:\n  $method.alias_map")
 
-    func_define = r"^define .*? {"m
-    ir =  method.llvm_ir
-    result = IOBuffer()
-    print(result, "@GenericMemoryInstance = common global { i32, i32 } { i32 0, i32 0 }, align 32\n")
-    prev_pos = 1
-    for m in eachmatch(func_define, ir)
-        offset = m.offset+length(m.match)
-        print(result, ir[prev_pos:offset])
-
-        body_end = StaticLLVM.find_matching_brace(ir, m.offset)-1
-        body = ir[offset:body_end]
-        write_func_body(result, body, GenericMemory_to_size)
-        prev_pos = body_end + 1
+    n_funcs = length(llvm.funcs)
+    @inbounds for i in 1:n_funcs
+        blocks = split_llvm_blocks(llvm.funcs[i])
+        blocks_map = IdDict(block.lable=>block for block in blocks)
+        for block in blocks
+            replace_GenericMemory_instance(blocks_map, block) && continue
+            replace_GenericMemory_alloc(block, GenericMemory_to_size) && continue
+            filter_block(block)
+        end
+        llvm.alias["GenericMemoryInstance"] = "common global { i64*, i64* } zeroinitializer, align 16"
+        llvm.funcs[i] = join((blk.ir for blk in blocks), "\n")
     end
-    print(result, ir[prev_pos:end])
-    method.llvm_ir = String(take!(result))
 end

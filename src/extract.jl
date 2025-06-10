@@ -1,9 +1,11 @@
+# - `modvar_ids::Vector{Int}`: A list of module-level variable addresses (e.g., `jl_global#`) found in the LLVM IR.
 
 mutable struct LLVM_Meta
     name::String
     headers::Vector{String}
     funcs::Vector{String}
-    alias::Dict{String, String} # 
+    alias::Dict{String, String}
+    addrs::IdDict{Symbol, IdDict{UInt, String}}
     decls::Dict{String, String}
     attrs::Vector{String}
     raw_ir::String
@@ -30,7 +32,7 @@ This is useful for identifying all ModVars referenced by the generated code.
 # Example pattern matched:
 `.set ".Ljl_global#42.jit", 64`
 """
-function extract_modvars(ir::String)::Vector{Int}
+function _extract_modvars(ir::String)::Vector{Int}
     # length("\.set\s+"\.Ljl_global#") == 19
     regex = r"""\.set\s+"\.Ljl_global#\d+\.jit",\s+(\d+)"""
     res = [(m.match[19:end], m.captures[1]) for m in eachmatch(regex, ir)]
@@ -82,11 +84,11 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)
     headers = String[]
     funcs = String[] # func body
     for m in eachmatch(func_pattern, ir)
-        body_end = find_matching_brace(ir, m.offset)
+        body_end = find_matching_brace(ir, m.offset)-1
         body_end == -1 && error("Function body for match not found.")
         header_end = m.offset + length(m.match)
         header = ir[m.offset:header_end]
-        decl = ir[header_end+1:body_end+1]
+        decl = ir[header_end+1:body_end]
         name = "julia_$(m.captures[1])_$(m.captures[2])"
         if m.captures[1] == funcname && all(isdigit, m.captures[2])
             mangled_funcname = name
@@ -115,15 +117,34 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)
     
     alias_pattern = r"^@([^\ ]+)\s*=\s(.+)$"m
     alias_map = Dict{String,String}()
+    
+    addrs_map = IdDict{Symbol, IdDict{UInt, String}}(
+        :glob=>IdDict(),
+        :generic_memory=>IdDict(),
+        :unknown=>IdDict(),
+    )
+    addrs_name = ["jl_global#"=>:glob, "Core.GenericMemory#" =>:generic_memory, ""=>:unknown]
+
     constvar_matches = RegexMatch[]
+    addr_pattern = r"inttoptr \(i64 (\d+) to ptr\)"
     for m in eachmatch(alias_pattern, ir)
         k, v = m.captures[1:2]
-        if occursin("\"_j_const#", k)
-            push!(constvar_matches, m)
-        else
+        occursin(r"\"_j_const#\d+\"", k) && (push!(constvar_matches, m), continue)
+        
+        m_addr = match(addr_pattern, v)
+        if m_addr isa Nothing
+            # if not contain an address pointer
             alias_map[k]= v
+        else
+            addr = parse(UInt, m_addr.captures[1])
+            for (name, alias_type) in addrs_name
+                if occursin(name, k) 
+                    addrs_map[alias_type][addr] = k
+                    break
+                end
+            end
         end
-    end    
+    end
 
     if !isempty(constvar_matches)
         constvar_map = Dict{SubString,String}()
@@ -139,7 +160,7 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)
 
     # === Collect external function declarations and attributes ===
     # Skip internal or known runtime functions
-    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_|julia.\w*_gc_frame))(.+)\(.+$"""m
+    decl_pattern = r"""^declare\s+(?:[\w()]+\s+)*@(?!(llvm|ijl_gc_|ijl_box_|julia.gc_alloc_|julia.pointer_from_objref|julia.\w*_gc_frame))(.+)\(.+$"""m
 
     decl_map = Dict{String,String}()
     for m in eachmatch(decl_pattern, ir)
@@ -150,7 +171,7 @@ function extract_llvm(method::Core.Method, ir::String, is_main::Bool=false)
     # Append function attributes (if any)
     attr_pattern = r"^attributes\s+#\d+\s+=\s+\{.*\}\s*$"m
     attrs = map(m -> m.match, eachmatch(attr_pattern, ir))
-    return LLVM_Meta(funcname, headers, funcs, alias_map, decl_map, attrs, ir)
+    return LLVM_Meta(funcname, headers, funcs, alias_map, addrs_map, decl_map, attrs, ir)
 end
 
 """
@@ -203,6 +224,7 @@ function strip_gc_allocations(ir::String)::String
     # === Step 3: Replace pool alloc calls with malloc ===
     gc_func_pat = "@ijl_gc_pool_alloc_instrumented("
     for (i, line) in enumerate(lines)
+        startswith(line, "declare") && break
         call_pos = findfirst(gc_func_pat, line)
         if call_pos !== nothing && occursin(obj_pat, line)
             # Backtrack to find the start of the size argument
@@ -221,7 +243,7 @@ function strip_gc_allocations(ir::String)::String
     end
 
     # === Step 4: Add malloc declaration at the top ===
-    malloc_decl = "declare noalias nonnull ptr @malloc(i64)\n\n"
+    malloc_decl = "declare noalias nonnull ptr @malloc(i64) \n\n"
     return malloc_decl * join(lines, "\n")
 end
 
@@ -280,8 +302,19 @@ function make_modvar_def(value::T, is_const::Bool = false) where {T}
         return "$attri i8* null, align 8\n", "external $attri i8*\n"
     elseif T == String
         n = sizeof(value)
-        defi = "{i64, [$(n+1) x i8]} {i64 $n, [$(n+1) x i8]  c\"$value\0\"} , align 8"
+        defi = """{i64, [$n x i8], i8} {i64 $n, [$n x i8]  c"$value", i8 0} , align 8\n"""
         return "$attri $defi", "external $attri {i64, [$(n+1) x i8]} \n"
+    elseif ismutabletype(T)
+        n = sizeof(value)
+        buf = IOBuffer()
+        p = pointer_from_objref(value) |> Ptr{UInt8}
+        for i in 1:n
+            v = unsafe_load(p, i)
+            print(buf, "\\$(string(v, base=16, pad=2))")
+        end
+        bytes_s = String(take!(buf))
+        defi = """{[$n x i8], i8} {[$n x i8] c"$bytes_s", i8 0}, align 8\n"""
+        return "$attri $defi", "external $attri [$(n) x i8] \n"
     elseif !ismutabletype(T) && !isprimitivetype(T)
         N = sizeof(T)
         bytes = reinterpret(NTuple{N, UInt8}, value)
@@ -312,7 +345,8 @@ Replace occurrences of Julia global variables in LLVM IR code with new names.
 - Throws an error if the number of unique globals found does not match the number of new names provided.
 
 """
-function replace_globals(llvm_ir::String, new_names::Vector{String}; policy::Symbol=:strict)::String
+
+function replace_globals(llvm::String, new_names::Vector{String}; policy::Symbol=:strict)::String
     # Early return if no new names are provided
     isempty(new_names) && return llvm_ir
 

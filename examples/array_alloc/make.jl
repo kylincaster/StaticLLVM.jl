@@ -1,15 +1,16 @@
-
 using StaticLLVM
-
-include("libio.jl")
+include("array_alloc.jl")
 
 config = StaticLLVM.get_config(;
     dir=".",
     compile_mode=:onefile,
     clean_cache = false,
-    debug=true
+    debug = false,
+    policy = :strip_all
 )
 
 # compile mode = onefile, makefile
 # clean = true or false
-build(LibIO, config)
+ret = build(ArrayAlloc, config)
+
+
