@@ -26,6 +26,56 @@ function pyprint(args...; sep::AbstractString=" ", tail::AbstractString="\n")
 end
 
 """
+    LLVMBlock(lable::Symbol, index::Int, ir::SubString{String})
+
+Represents a basic block in LLVM IR with its label, index (order), and IR body.
+
+- `label::Symbol`:Identifier for the LLVM IR block, e.g. `:entry`, `:L3`, etc.  
+- `index::Int`: The order of block in LLVM IR function.
+- `ir::SubString{String}`: A substring view of the whole block.
+"""
+mutable struct LLVMBlock
+    label::Symbol              # The label of the block (e.g., :entry, :L3)
+    index::Int                 # Block's index in the IR order
+    ir::SubString{String}      # The raw LLVM IR content for this block
+end
+
+"""
+    split_blocks(ir::AbstractString) -> Vector{LLVMBlock}
+
+Splits a full LLVM IR string into a list of `LLVMBlock` objects, based on labeled
+basic blocks (e.g., `entry:`, `L3:`).
+
+# Arguments
+- `ir`: A string containing LLVM IR code.
+
+# Returns
+- A vector of `LLVMBlock` objects, each representing a labeled block of IR code.
+
+# Example
+```julia
+blocks = split_blocks(ir_string)
+```
+"""
+function split_blocks(ir::AbstractString)::Vector{LLVMBlock}
+    block_pattern = r"(?m)^\s*(\w+):" # Match block labels like "entry:", "L3:", etc.
+    matches = collect(eachmatch(block_pattern, ir))
+
+    blocks = LLVMBlock[]
+
+    for i in eachindex(matches)
+        label = Symbol(matches[i].captures[1])                 # Label,(e.g. :top, :L3)
+        start = matches[i].offset                              # block offset
+        end_ = i < length(matches) ? matches[i+1].offset - 1 : lastindex(ir)
+        block = LLVMBlock(label, i, SubString(ir, start, end_))
+        push!(blocks, block)
+    end
+    return blocks
+end
+
+
+
+"""
     find_matching_brace(s::String, start_pos::Int=1) -> Int
 
 Finds the index of the closing brace '}' that matches the first opening brace '{' 
