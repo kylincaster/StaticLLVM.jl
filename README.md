@@ -1,10 +1,12 @@
 # StaticLLVM
 
-中文版XXX
+[中文版](./README.md)
+**StaticLLVM.jl** 是一个可以将 Julia 代码翻译并转换为静态 LLVM IR 中间表示并获得能独立运行的程序的库。
 
-[![Build Status](https://github.com/Kylin/StaticLLVM.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/Kylin/StaticLLVM.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Docs][docs-dev-img]][docs-dev-url]
+[![CI][ci-img]][ci-url]
 
-## LLVM IR Transformer for Julia Internal Functions
+## A Transformer for Julia Internal LLVM IR code
 
 **StaticLLVM.jl** provides a lightweight framework for analyzing and modifying LLVM IR generated from Julia internal functions. It enables transformations on Julia-emitted IR by identifying and replacing specific constructs—such as GC-related instructions or Julia intrinsics—with standard equivalents like `malloc`, `printf`, etc.
 
@@ -159,4 +161,9 @@ Inspired by Julia’s LLVM-based compilation model, this project provides a mini
 - [SyslabCC-JuliaAOT](https://github.com/Suzhou-Tongyuan/SyslabCC-JuliaAOT) - An ahead-of-time (AOT) compiler for type-stable Julia programs, provide by in the SyslabIC program package
 - [Accessors.jl](https://github.com/JuliaObjects/Accessors.jl) - A library for ergonomic and functional updates of immutable data structures in Julia.
 
+
+[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-dev-url]: https://kylincaster.github.io/StaticLLVM.jl/dev/
+[ci-img]: https://github.com/kylincaster/StaticLLVM.jl/workflows/CI/badge.svg
+[ci-url]: https://github.com/kylincaster/StaticLLVM.jl/actions/workflows/CI.yml
 
