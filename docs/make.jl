@@ -11,7 +11,7 @@ makedocs(;
     sitename="StaticLLVM.jl",
     format=Documenter.HTML(;
         prettyurls=get(ENV, "CI", "false") == "true",
-        canonical="https://kylincaster.github.io/StaticTools.jl",
+        canonical="https://kylincaster.github.io/StaticLLVM.jl",
         assets=String[],
     ),
     warnonly = true,
